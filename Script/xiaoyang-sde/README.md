@@ -20,7 +20,7 @@ Users could deploy the reverse proxy on Cloudflare's global network without sett
 
 1. Navigate to [Cloudflare Workers](https://workers.cloudflare.com), register or sign in your Cloudflare account, and set custom subdomain for workers, and create a new Worker.
 
-2. Customize '[src/index.js](https://github.com/Berkeley-Reject/Workers-Proxy/blob/master/src/index.js)', paste the code into Cloudflare online editor to replace the default one.
+2. Customize '[src/index.js](https://github.com/OshekharO/CF-REVERSE-PROXY/blob/main/Script/xiaoyang-sde/index.js)', paste the code into Cloudflare online editor to replace the default one.
 
 3. Change name of your Worker, save and deploy it, and check whether its performance fulfills your demand.
 
