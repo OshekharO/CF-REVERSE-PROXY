@@ -20,7 +20,7 @@ Users could deploy the reverse proxy on Cloudflare's global network without sett
    - 📥 Increase security
 - 🛠️ String replacement
 - 🧬 Custom resource replacment
-- 🪅 Ads Removing
+- 🪅 Removing Ads Possible
 
 ## 🤝 Special Thanks & Credits
 
