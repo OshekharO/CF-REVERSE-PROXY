@@ -12,7 +12,7 @@
 
 1. Navigate to [Cloudflare Workers](https://workers.cloudflare.com), register or sign in your Cloudflare account, and set custom subdomain for workers, and create a new Worker.
 
-2. Customize [booster.js](https://github.com/viperadnan-git/booster.js/blob/master/src/booster.js), paste the code into Cloudflare online editor to replace the default one.
+2. Customize [booster.js](https://github.com/discordiy/CF-REVERSE-PROXY/blob/main/Script/viperadnan/booster.js), paste the code into Cloudflare online editor to replace the default one.
 
 3. Change the name of your Worker, save and deploy the code.
 
