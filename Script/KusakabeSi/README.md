@@ -17,5 +17,5 @@ A reverse proxy for cloudflare worker with some additional features:
 ## How to use:
 
 Create a cloudflare worker  
-Checkout my [worker.js](https://github.com/discordiy/CF-REVERSE-PROXY/Script/KusakabeSi/worker.js), copy and paste to your cloudflare worker.  
-Then modify the `reverse ` section, fill the infomatoin based on my [reverse_demo.js](https://github.com/discordiy/CF-REVERSE-PROXY/Script/KusakabeSi/reverse_demo.js).
+Checkout my [worker.js](https://github.com/discordiy/CF-REVERSE-PROXY/blob/main/Script/KusakabeSi/worker.js), copy and paste to your cloudflare worker.  
+Then modify the `reverse ` section, fill the infomatoin based on my [reverse_demo.js](https://github.com/discordiy/CF-REVERSE-PROXY/blob/main/Script/KusakabeSi/reverse_demo.js).
