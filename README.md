@@ -6,7 +6,7 @@ Users could deploy the reverse proxy on Cloudflare's global network without sett
 
 ## 🙈 Demo
 
-- **🖤 Dark Theme**: _https://proxy.oshekher.workers.dev_
+-  _https://proxy.oshekher.workers.dev_
 
 ## ✨ Unique Features
 
