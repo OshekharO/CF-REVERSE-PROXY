@@ -49,9 +49,8 @@ async function handleRequest(request) {
     modifiedBody = modifiedBody.replace(fileRegex, replaceValue)
   })
 
-  // Filter out ads by replacing them with an empty string
-  modifiedBody = modifiedBody.replace(/<\s*script[^>]*>[^<]*\bads\b[^<]*<\/\s*script\s*>/gi, '')
-  modifiedBody = modifiedBody.replace(/<\s*iframe[^>]*>[^<]*\bads\b[^<]*<\/\s*iframe\s*>/gi, '')
+// Filter out ads by replacing script or iframe tags with an empty string
+  modifiedBody = modifiedBody.replace(/<\s*(script|iframe)[^>]*>[^<]*<\/\s*(script|iframe)\s*>/gi, '')
 
   // Return the modified response
   return new Response(modifiedBody, {
