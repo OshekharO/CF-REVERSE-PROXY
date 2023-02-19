@@ -61,7 +61,7 @@ async function handleRequest(request) {
 }
 
 async function getCountryFromIp(ipAddress) {
-  const url = `https://api.ipgeolocation.io/ipgeo?apiKey=YOUR_API_KEY&ip=${ipAddress}`
+  const url = `https://api.ipgeolocation.io/ipgeo?apiKey=2bd6c5d15f414907b4bcb71e12542694&ip=${ipAddress}`
   const response = await fetch(url)
   const data = await response.json()
   return data.country_code2
