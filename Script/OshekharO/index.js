@@ -69,30 +69,8 @@ async function getCountryFromIp(ipAddress) {
 }
 
 function isAdResource(url) {
-  const adResourceUrls = [
-    'googleadservices.com',
-    'doubleclick.net',
-    'googletagservices.com',
-    'adsafeprotected.com',
-    'infolinks.com',
-    'bidvertiser.com',
-    'taboola.com',
-    'trafficjunky.com',
-    'adservice.google.com',
-    'fastclick.com',
-    'google-analytics.com',
-    'ads.facebook.com',
-    'advertising.twitter.com',
-    'ads.linkedin.com',
-    'googlesyndication.com',
-    'adservice.google.com',
-    'adservice.google.co.uk',
-    'adservice.google.de',
-    'adservice.google.fr',
-    'adservice.google.it',
-    'adservice.google.es'
-  ]
+  const adServiceRegex = /((doubleclick|adservice\.google|googletagservices|googlesyndication|google-analytics|infolinks|taboola|trafficjunky|bidvertiser|fastclick)\.com|ads\.facebook\.com|advertising\.twitter\.com|ads\.linkedin\.com|adsafeprotected\.com/g)/;
 
-  // Check if the URL matches any of the known ad resource URLs
-  return adResourceUrls.some(adResourceUrl => url.hostname.endsWith(adResourceUrl))
+  // Check if the URL matches the ad service regular expression
+  return adServiceRegex.test(url.hostname);
 }
