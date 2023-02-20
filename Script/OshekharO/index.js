@@ -22,51 +22,59 @@ async function handleRequest(request) {
         <input type="url" name="url" required>
         <button type="submit">Submit</button>
       </form>
-      <style>
-        #url-form {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          margin-top: 20px;
-        }
-
-        label {
-          font-size: 1.2em;
-          margin-bottom: 10px;
-        }
-
-        input[type="text"] {
-          padding: 10px;
-          border: none;
-          border-radius: 5px;
-          box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
-          margin-bottom: 20px;
-          width: 300px;
-          font-size: 1.2em;
-        }
-
-        button[type="submit"] {
-          padding: 10px 20px;
-          background-color: #007bff;
-          color: #fff;
-          border: none;
-          border-radius: 5px;
-          font-size: 1.2em;
-          cursor: pointer;
-          transition: all 0.2s ease;
-        }
-
-        button[type="submit"]:hover {
-          background-color: #0056b3;
-        }
-
-        button[type="submit"]:focus {
-          outline: none;
-          box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
-        }
-      </style>
     `
-    return new Response(form, { headers: { 'Content-Type': 'text/html' } })
+    return new Response(`<!DOCTYPE html>
+      <html>
+        <head>
+          <title>Block Ads and Replace Files</title>
+          <style>
+            #url-form {
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              margin-top: 20px;
+            }
+
+            label {
+              font-size: 1.2em;
+              margin-bottom: 10px;
+            }
+
+            input[type="text"] {
+              padding: 10px;
+              border: none;
+              border-radius: 5px;
+              box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+              margin-bottom: 20px;
+              width: 300px;
+              font-size: 1.2em;
+            }
+
+            button[type="submit"] {
+              padding: 10px 20px;
+              background-color: #007bff;
+              color: #fff;
+              border: none;
+              border-radius: 5px;
+              font-size: 1.2em;
+              cursor: pointer;
+              transition: all 0.2s ease;
+            }
+
+            button[type="submit"]:hover {
+              background-color: #0056b3;
+            }
+
+            button[type="submit"]:focus {
+              outline: none;
+              box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+            }
+          </style>
+        </head>
+        <body>
+          ${form}
+        </body>
+      </html>`, { headers: { 'Content-Type': 'text/html' } })
   }
 
   // Fetch the requested URL
