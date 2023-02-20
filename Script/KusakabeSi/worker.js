@@ -9,7 +9,7 @@
      (_______/|/         |/   \__/(_______/   \_/   (_______/|/   \__/\_______)(_______/  |/       |/   \__/(_______)|/     \|   \_/   
                                                                                                                                   
 
-A CF-REVERSE-PROXY Script For Cloudflare Workers at https://github.com/discordiy/CF-REVERSE-PROXY */
+A CF-REVERSE-PROXY Script For Cloudflare Workers at https://github.com/OshekharO/CF-REVERSE-PROXY */
 
 reverse = {}
 
@@ -104,6 +104,8 @@ async function handleRequest(req) {
     // Author: Kusakabe Si
     if (contype != null && (contype.includes("json") || contype.includes("html") || contype.includes("text") || contype.includes("javascript"))) {
         var html = await response.text();
+        // Remove ads using regex
+        html = html.replace(/<\s*div\s+class\s*=\s*["']?\s*ads?\s*["']?\s*>.*?<\s*\/\s*div\s*>/ig, "");
         // console.log(html)
         allemail = [...html.matchAll(new RegExp("data-cfemail=\"([a-z0-9]+)\"", "g"))].concat([...html.matchAll(new RegExp("email-protection#([a-z0-9]+)\"", "g"))])
         // console.log(allemail)
