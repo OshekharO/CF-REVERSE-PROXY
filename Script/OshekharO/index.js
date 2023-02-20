@@ -3,26 +3,77 @@ addEventListener('fetch', event => {
 })
 
 async function handleRequest(request) {
-  // Define the website URL and the replacement files
-  const websiteUrl = 'https://example.com'
-  const fileReplacements = [
-    {
-      searchFile: 'adsense.js',
-      replaceFile: 'adlock.js'
-    }
-  ]
+  // Define the replacement files
+  const fileReplacements = [    {      searchFile: 'adsense.js',      replaceFile: 'adlock.js'    }  ]
+
+  // Prompt the user to enter a website URL
+  let websiteUrl = null
+  if (request.method === 'POST') {
+    const body = await request.text()
+    const params = new URLSearchParams(body)
+    websiteUrl = params.get('url')
+  }
+
+  // If the website URL is not provided, prompt the user to enter it
+  if (!websiteUrl) {
+    const form = `
+      <form id="url-form" method="POST">
+        <label for="url">Enter the website URL:</label>
+        <input type="url" name="url" required>
+        <button type="submit">Submit</button>
+      </form>
+      <style>
+        #url-form {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          margin-top: 20px;
+        }
+
+        label {
+          font-size: 1.2em;
+          margin-bottom: 10px;
+        }
+
+        input[type="text"] {
+          padding: 10px;
+          border: none;
+          border-radius: 5px;
+          box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+          margin-bottom: 20px;
+          width: 300px;
+          font-size: 1.2em;
+        }
+
+        button[type="submit"] {
+          padding: 10px 20px;
+          background-color: #007bff;
+          color: #fff;
+          border: none;
+          border-radius: 5px;
+          font-size: 1.2em;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+
+        button[type="submit"]:hover {
+          background-color: #0056b3;
+        }
+
+        button[type="submit"]:focus {
+          outline: none;
+          box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+        }
+      </style>
+    `
+    return new Response(form, { headers: { 'Content-Type': 'text/html' } })
+  }
 
   // Fetch the requested URL
-  const response = await fetch(request)
+  const response = await fetch(websiteUrl)
 
   // If the response status is not 200, return the original response
   if (response.status !== 200) {
-    return response
-  }
-
-  // If the requested URL is not the website URL, return the original response
-  const url = new URL(request.url)
-  if (url.hostname !== 'example.com') {
     return response
   }
 
@@ -37,6 +88,7 @@ async function handleRequest(request) {
   let modifiedBody = body
 
   // Block ads by blocking requests to known ad resource URLs
+  const url = new URL(websiteUrl)
   if (isAdResource(url)) {
     return new Response('', { status: 403 })
   }
