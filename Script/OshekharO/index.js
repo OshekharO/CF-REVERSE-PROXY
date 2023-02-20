@@ -120,7 +120,7 @@ async function getCountryFromIp(ipAddress) {
 }
 
 function isAdResource(url) {
-  const adServiceRegex = /((doubleclick|adservice\.google|googletagservices|googlesyndication|google-analytics|infolinks|taboola|trafficjunky|bidvertiser|fastclick)\.com|ads\.facebook\.com|advertising\.twitter\.com|ads\.linkedin\.com|adsafeprotected\.com/g)/;
+  const adServiceRegex = /((doubleclick|adservice\.google|googletagservices|googlesyndication|google-analytics|infolinks|taboola|trafficjunky|bidvertiser|fastclick)\.com|ads\.facebook\.com|advertising\.twitter\.com|ads\.linkedin\.com|adsafeprotected\.com)/;
 
   // Check if the URL matches the ad service regular expression
   return adServiceRegex.test(url.hostname);
