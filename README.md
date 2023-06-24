@@ -4,10 +4,6 @@ Workers-Proxy is a lightweight Javascript Reverse Proxy based on Cloudflare Work
 
 Users could deploy the reverse proxy on Cloudflare's global network without setting up virtual private servers and configuring Nginx or Apache.
 
-## 🙈 Demo
-
--  _https://proxy.oshekher.workers.dev_
-
 ## ✨ Unique Features
 
 - 🔎 Bypass Country Blockade
