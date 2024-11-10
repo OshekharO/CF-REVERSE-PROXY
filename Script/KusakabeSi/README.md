@@ -1,5 +1,5 @@
-# Reverse proxy for cloudflare worker
-A reverse proxy for cloudflare worker with some additional features:
+# Reverse Proxy for Cloudflare Worker
+A reverse proxy for Cloudflare Worker with some additional features:
 1. Miltiple site in one worker
 2. String replacement
 3. Custom resource replacment
