@@ -2,6 +2,26 @@ addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request));
 });
 
+const ALLOWED_PROTOCOLS = ['http:', 'https:'];
+const BLACKLISTED_DOMAINS = ['example.com', 'another-blocked-site.com'];
+
+function isAllowedUrl(url) {
+  try {
+    const parsedUrl = new URL(url);
+
+    if (!ALLOWED_PROTOCOLS.includes(parsedUrl.protocol)) {
+      return { valid: false, error: 'Invalid protocol' };
+    }
+    if (BLACKLISTED_DOMAINS.some(domain => 
+      parsedUrl.hostname.includes(domain))) {
+      return { valid: false, error: 'Blacklisted domain' };
+    }
+    return { valid: true, error: null };
+  } catch {
+    return { valid: false, error: 'Invalid URL' };
+  }
+}
+
 async function handleRequest(request) {
   try {
       const url = new URL(request.url);
@@ -12,44 +32,44 @@ async function handleRequest(request) {
               }
           });
       }
-    
-      if (request.method === 'OPTIONS') {
-          return handleCorsPreflight(request);
-      }
-    
+
       let actualUrlStr = decodeURIComponent(url.pathname.replace("/", ""));
 
       actualUrlStr = ensureProtocol(actualUrlStr, url.protocol);
 
       actualUrlStr += url.search;
 
-      const newHeaders = filterHeaders(request.headers, name => !name.startsWith('cf-'));
+      const validation = isAllowedUrl(actualUrlStr);
+      if (!validation.valid) {
+          console.log(`Blocked request to ${actualUrlStr} due to ${validation.error}`);
+          return jsonResponse({
+              error: `URL validation failed: ${validation.error}`
+          }, 400);
+      }
 
+      const newHeaders = filterHeaders(request.headers, name => !name.startsWith('cf-'));
+      
       const modifiedRequest = new Request(actualUrlStr, {
           headers: newHeaders,
           method: request.method,
           body: request.body,
           redirect: 'manual'
       });
-
+    
       const response = await fetch(modifiedRequest);
       let body = response.body;
-
       if ([301, 302, 303, 307, 308].includes(response.status)) {
           return handleRedirect(response);
       } else if (response.headers.get("Content-Type")?.includes("text/html")) {
           const clonedResponse = response.clone();
           body = await handleHtmlContent(clonedResponse, url.protocol, url.host, actualUrlStr);
       }
-
       const modifiedResponse = new Response(body, {
           status: response.status,
           statusText: response.statusText,
           headers: response.headers
       });
-
       setNoCacheHeaders(modifiedResponse.headers);
-
       setCorsHeaders(modifiedResponse.headers, request.headers.get('Origin'));
       return modifiedResponse;
   } catch (error) {
@@ -187,7 +207,7 @@ function getRootHtml() {
                           <form id="urlForm" onsubmit="redirectToProxy(event)">
                               <div class="input-field">
                                   <input type="text" id="targetUrl" placeholder="URL...." required>
-                                  <label for="targetUrl">URL</label>
+                                  <label for="targetUrl">Target Address:</label>
                               </div>
                               <button type="submit" class="btn waves-effect waves-light teal darken-2 full-width">Submit</button>
                           </form>
