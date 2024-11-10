@@ -34,7 +34,7 @@ const disable_cache = true;
 // Replace texts.
 const replace_dict = {
     '$upstream': '$custom_domain',
-    '//uncoder.eu.org': ''
+    'Premium': ''
 };
 
 addEventListener('fetch', event => {
@@ -103,22 +103,25 @@ async function fetchAndApply(request) {
                 new_response_headers.set('Cache-Control', 'no-store');
             }
 
-            new_response_headers.set('access-control-allow-origin', '*');
-            new_response_headers.set('access-control-allow-credentials', true);
-            new_response_headers.delete('content-security-policy');
-            new_response_headers.delete('content-security-policy-report-only');
-            new_response_headers.delete('clear-site-data');
+            new_response_headers.set('Access-Control-Allow-Origin', '*');
+            new_response_headers.set('Access-Control-Allow-Credentials', 'true');
+            new_response_headers.delete('Content-Security-Policy');
+            new_response_headers.delete('Content-Security-Policy-Report-Only');
+            new_response_headers.delete('Clear-Site-Data');
 
-            if (new_response_headers.get('x-pjax-url')) {
-                new_response_headers.set('x-pjax-url', response_headers.get('x-pjax-url').replace('//' + upstream_domain, '//' + url_hostname));
+            if (new_response_headers.get('X-Pjax-Url')) {
+                new_response_headers.set('X-Pjax-Url', response_headers.get('X-Pjax-Url').replace('//' + upstream_domain, '//' + url_hostname));
             }
 
-            const content_type = new_response_headers.get('content-type');
+            const content_type = new_response_headers.get('Content-Type');
             let original_text = null;
 
             if (content_type && content_type.includes('text/html') && content_type.includes('UTF-8')) {
+                console.log('Content type is text/html and UTF-8, applying text replacement.');
                 original_text = await replace_response_text(original_response, upstream_domain, url_hostname);
+                console.log('Text after replacement:', original_text);
             } else {
+                console.log('Content type is not text/html and UTF-8, not applying text replacement.');
                 original_text = await original_response.blob();
             }
 
@@ -136,6 +139,9 @@ async function fetchAndApply(request) {
 
 async function replace_response_text(response, upstream_domain, host_name) {
     const text = await response.text();
+    console.log('Original text:', text);
+
+    let replaced_text = text;
 
     for (const [i, j] of Object.entries(replace_dict)) {
         let key = i;
@@ -153,10 +159,12 @@ async function replace_response_text(response, upstream_domain, host_name) {
             value = host_name;
         }
 
-        const re = new RegExp(key, 'g');
-        text = text.replace(re, value);
+        const re = new RegExp(key, 'gi'); // Use 'gi' for case-insensitive and global replacement
+        replaced_text = replaced_text.replace(re, value);
     }
-    return text;
+
+    console.log('Replaced text:', replaced_text);
+    return replaced_text;
 }
 
 async function device_status(user_agent_info) {
