@@ -28,7 +28,7 @@ const config = {
   https: true,
   disable_cache: true,
   replace_dict: {
-    '$target_main': '$custom_main',
+    'literotica.com': 'goindex.eu.org',
     'Premium': ''
   },
   security_headers: {
@@ -42,25 +42,35 @@ const config = {
 // Domain Mappings
 function generateDomainMappings() {
   const mappings = {};
-  mappings[config.domains.custom.main] = config.domains.target.main;
+  
+  // Main domains
+  mappings[config.domains.custom.main] = `www.${config.domains.target.main}`;
   mappings[`www.${config.domains.custom.main}`] = `www.${config.domains.target.main}`;
+  
+  // Subdomains
   config.domains.custom.subdomains.forEach(subdomain => {
     if (subdomain !== 'www') {
       mappings[`${subdomain}.${config.domains.custom.main}`] = `${subdomain}.${config.domains.target.main}`;
     }
   });
+  
   return mappings;
 }
 
 function generateReverseMappings() {
   const reverse = {};
+  
+  // Main domains
   reverse[config.domains.target.main] = config.domains.custom.main;
   reverse[`www.${config.domains.target.main}`] = `www.${config.domains.custom.main}`;
+  
+  // Subdomains
   config.domains.target.subdomains.forEach(subdomain => {
     if (subdomain !== 'www') {
       reverse[`${subdomain}.${config.domains.target.main}`] = `${subdomain}.${config.domains.custom.main}`;
     }
   });
+  
   return reverse;
 }
 
@@ -85,25 +95,36 @@ async function fetchAndApply(request) {
 
     // Header validation
     if (!region || !ip_address || !user_agent) {
-      return new Response('Access denied: Missing required headers.', { status: 403 });
+      return new Response('Access denied: Missing required headers.', { 
+        status: 403,
+        headers: { 'Content-Type': 'text/plain; charset=UTF-8' }
+      });
     }
 
     if (config.blocked_region.includes(region)) {
-      return new Response('Access denied: Region blocked.', { status: 403 });
+      return new Response('Access denied: Region blocked.', { 
+        status: 403,
+        headers: { 'Content-Type': 'text/plain; charset=UTF-8' }
+      });
     }
 
     if (config.blocked_ip_address.includes(ip_address)) {
-      return new Response('Access denied: IP blocked.', { status: 403 });
+      return new Response('Access denied: IP blocked.', { 
+        status: 403,
+        headers: { 'Content-Type': 'text/plain; charset=UTF-8' }
+      });
     }
 
     const url = new URL(request.url);
     const incomingHost = url.hostname;
-    const targetDomain = domain_map[incomingHost] || config.domains.target.main;
+    const targetDomain = domain_map[incomingHost] || `www.${config.domains.target.main}`;
 
     // Prevent loop
     if (incomingHost === targetDomain) {
       return new Response('Loop detected', { status: 508 });
     }
+
+    console.log(`Proxying ${incomingHost} -> ${targetDomain}${url.pathname}`);
 
     url.hostname = targetDomain;
     url.protocol = config.https ? 'https:' : 'http:';
@@ -124,14 +145,17 @@ async function fetchAndApply(request) {
 
   } catch (err) {
     console.error('Error:', err);
-    return new Response('Internal Server Error', { status: 500 });
+    return new Response('Internal Server Error', { 
+      status: 500,
+      headers: { 'Content-Type': 'text/plain; charset=UTF-8' }
+    });
   }
 }
 
 async function createModifiedRequest(originalRequest, targetUrl, targetDomain, incomingHost) {
   const headers = new Headers(originalRequest.headers);
   headers.set('Host', targetDomain);
-  headers.set('Referer', `${targetUrl.protocol}//${incomingHost}`);
+  headers.set('Referer', `${targetUrl.protocol}//${targetDomain}`);
   headers.delete('cf-connecting-ip');
   headers.delete('cf-ipcountry');
   headers.delete('cf-ray');
@@ -180,18 +204,40 @@ async function processResponse(originalResponse, targetDomain, incomingHost) {
           u.hostname = getCustomDomain(u.hostname);
           headers.set('location', u.toString());
         }
-      } catch {}
+      } catch (e) {
+        console.error('Error parsing location header:', e);
+      }
+    }
+  }
+
+  // Handle X-Pjax-Url header
+  if (headers.get('X-Pjax-Url')) {
+    const pjaxUrl = headers.get('X-Pjax-Url');
+    try {
+      const pjaxUrlObj = new URL(pjaxUrl);
+      if (pjaxUrlObj.hostname.includes(config.domains.target.main)) {
+        const customDomain = getCustomDomain(pjaxUrlObj.hostname);
+        pjaxUrlObj.hostname = customDomain;
+        headers.set('X-Pjax-Url', pjaxUrlObj.toString());
+      }
+    } catch (e) {
+      // If URL parsing fails, try simple replacement
+      const newPjaxUrl = pjaxUrl.replace(`//${targetDomain}`, `//${incomingHost}`);
+      headers.set('X-Pjax-Url', newPjaxUrl);
     }
   }
 
   const contentType = headers.get('content-type') || '';
   let body;
 
-  if (contentType.includes('text/html') || contentType.includes('text/plain') || contentType.includes('text/css')) {
+  // Process all text-based content including JSON and JavaScript
+  if (contentType.includes('text/') || 
+      contentType.includes('application/json') || 
+      contentType.includes('application/javascript') ||
+      contentType.includes('application/x-javascript')) {
     const text = await originalResponse.text();
     body = await replace_all_domains(text, incomingHost);
   } else {
-    // Skip rewriting JSON/JS for safety
     body = originalResponse.body;
   }
 
@@ -214,21 +260,56 @@ function getCustomDomain(targetHostname) {
 async function replace_all_domains(text, incomingHost) {
   let replaced_text = text;
 
+  // Apply text replacements from replace_dict
   for (const [key, value] of Object.entries(config.replace_dict)) {
-    let searchValue = key;
-    let replaceValue = value;
-
-    if (searchValue === '$target_main') searchValue = config.domains.target.main;
-    if (replaceValue === '$custom_main') replaceValue = config.domains.custom.main;
-
-    const re = new RegExp(escapeRegExp(searchValue), 'gi');
-    replaced_text = replaced_text.replace(re, replaceValue);
+    const re = new RegExp(escapeRegExp(key), 'gi');
+    replaced_text = replaced_text.replace(re, value);
   }
 
+  // Replace all domain occurrences
   for (const [targetDomain, customDomain] of Object.entries(reverse_map)) {
-    replaced_text = replaced_text.replace(new RegExp(`https?://${escapeRegExp(targetDomain)}`, 'gi'), `https://${customDomain}`);
-    replaced_text = replaced_text.replace(new RegExp(`//${escapeRegExp(targetDomain)}`, 'gi'), `//${customDomain}`);
+    // Replace full URLs
+    replaced_text = replaced_text.replace(
+      new RegExp(`https?://${escapeRegExp(targetDomain)}`, 'gi'),
+      `https://${customDomain}`
+    );
+    
+    // Replace protocol-relative URLs
+    replaced_text = replaced_text.replace(
+      new RegExp(`//${escapeRegExp(targetDomain)}`, 'gi'),
+      `//${customDomain}`
+    );
+    
+    // Replace in JSON/JavaScript contexts
+    replaced_text = replaced_text.replace(
+      new RegExp(`"${escapeRegExp(targetDomain)}"`, 'gi'),
+      `"${customDomain}"`
+    );
+    
+    replaced_text = replaced_text.replace(
+      new RegExp(`'${escapeRegExp(targetDomain)}'`, 'gi'),
+      `'${customDomain}'`
+    );
   }
+
+  // Catch-all for any literotica.com subdomain
+  replaced_text = replaced_text.replace(
+    /https?:\/\/([a-zA-Z0-9-]+\.)?literotica\.com/gi, 
+    (match) => {
+      const url = new URL(match);
+      const customDomain = getCustomDomain(url.hostname);
+      return `https://${customDomain}`;
+    }
+  );
+  
+  replaced_text = replaced_text.replace(
+    /\/\/([a-zA-Z0-9-]+\.)?literotica\.com/gi,
+    (match) => {
+      const hostname = match.replace('//', '');
+      const customDomain = getCustomDomain(hostname);
+      return `//${customDomain}`;
+    }
+  );
 
   return replaced_text;
 }
