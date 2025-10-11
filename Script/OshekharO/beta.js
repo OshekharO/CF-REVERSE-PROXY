@@ -43,7 +43,7 @@ const config = {
 function generateDomainMappings() {
   const mappings = {};
   
-  // Main domains
+  // Handle both with and without www for custom domains
   mappings[config.domains.custom.main] = `www.${config.domains.target.main}`;
   mappings[`www.${config.domains.custom.main}`] = `www.${config.domains.target.main}`;
   
@@ -60,8 +60,11 @@ function generateDomainMappings() {
 function generateReverseMappings() {
   const reverse = {};
   
-  // Main domains
+  // Handle all possible target domain combinations
+  // Without www
   reverse[config.domains.target.main] = config.domains.custom.main;
+  
+  // With www
   reverse[`www.${config.domains.target.main}`] = `www.${config.domains.custom.main}`;
   
   // Subdomains
@@ -249,11 +252,21 @@ async function processResponse(originalResponse, targetDomain, incomingHost) {
 }
 
 function getCustomDomain(targetHostname) {
+  // Exact match first
+  if (reverse_map[targetHostname]) {
+    return reverse_map[targetHostname];
+  }
+  
+  // Then check for subdomain matches
   for (const [target, custom] of Object.entries(reverse_map)) {
-    if (targetHostname === target || targetHostname.endsWith('.' + target)) {
-      return custom;
+    if (targetHostname.endsWith('.' + target)) {
+      // Replace the target part with custom part
+      const subdomainPart = targetHostname.slice(0, -target.length);
+      return subdomainPart + custom;
     }
   }
+  
+  // Default to main custom domain
   return config.domains.custom.main;
 }
 
@@ -266,9 +279,13 @@ async function replace_all_domains(text, incomingHost) {
     replaced_text = replaced_text.replace(re, value);
   }
 
-  // Replace all domain occurrences
-  for (const [targetDomain, customDomain] of Object.entries(reverse_map)) {
-    // Replace full URLs
+  // Replace all domain occurrences - handle all variations
+  const allTargetDomains = Object.keys(reverse_map);
+  
+  for (const targetDomain of allTargetDomains) {
+    const customDomain = reverse_map[targetDomain];
+    
+    // Replace full URLs with protocol
     replaced_text = replaced_text.replace(
       new RegExp(`https?://${escapeRegExp(targetDomain)}`, 'gi'),
       `https://${customDomain}`
@@ -280,7 +297,7 @@ async function replace_all_domains(text, incomingHost) {
       `//${customDomain}`
     );
     
-    // Replace in JSON/JavaScript contexts
+    // Replace in JSON/JavaScript contexts (quoted)
     replaced_text = replaced_text.replace(
       new RegExp(`"${escapeRegExp(targetDomain)}"`, 'gi'),
       `"${customDomain}"`
@@ -290,11 +307,17 @@ async function replace_all_domains(text, incomingHost) {
       new RegExp(`'${escapeRegExp(targetDomain)}'`, 'gi'),
       `'${customDomain}'`
     );
+    
+    // Replace in various other contexts
+    replaced_text = replaced_text.replace(
+      new RegExp(`\\\\/${escapeRegExp(targetDomain)}`, 'gi'),
+      `\\/${customDomain}`
+    );
   }
 
-  // Catch-all for any literotica.com subdomain
+  // Catch-all for any target domain subdomain that might have been missed
   replaced_text = replaced_text.replace(
-    /https?:\/\/([a-zA-Z0-9-]+\.)?literotica\.com/gi, 
+    new RegExp(`https?://([a-zA-Z0-9-]+\\.)?${escapeRegExp(config.domains.target.main)}`, 'gi'), 
     (match) => {
       const url = new URL(match);
       const customDomain = getCustomDomain(url.hostname);
@@ -302,8 +325,9 @@ async function replace_all_domains(text, incomingHost) {
     }
   );
   
+  // Catch-all for protocol-relative URLs
   replaced_text = replaced_text.replace(
-    /\/\/([a-zA-Z0-9-]+\.)?literotica\.com/gi,
+    new RegExp(`//([a-zA-Z0-9-]+\\.)?${escapeRegExp(config.domains.target.main)}`, 'gi'),
     (match) => {
       const hostname = match.replace('//', '');
       const customDomain = getCustomDomain(hostname);
