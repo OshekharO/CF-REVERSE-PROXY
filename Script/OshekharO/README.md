@@ -156,7 +156,7 @@ Returns:
   "requests": 1000,
   "errors": 5,
   "blocked": 50,
-  "cache_hits": 200,
+  "cacheable_responses": 200,
   "uptime_seconds": 3600,
   "uptime_formatted": "1h 0m 0s",
   "requests_per_second": 0.28,

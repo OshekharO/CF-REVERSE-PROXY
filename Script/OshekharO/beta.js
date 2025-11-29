@@ -57,8 +57,7 @@ const config = {
   // Rate limiting configuration
   rate_limit: {
     enabled: true,
-    requests_per_minute: 60,
-    burst_limit: 10
+    requests_per_minute: 60
   },
   
   // Request timeout in milliseconds
@@ -147,7 +146,7 @@ const stats = {
   requests: 0,
   errors: 0,
   blocked: 0,
-  cache_hits: 0,
+  cacheable_responses: 0,
   start_time: Date.now()
 };
 
@@ -516,7 +515,8 @@ async function processResponse(originalResponse, targetDomain, incomingHost, rat
     const ttl = getCacheTTL(contentType);
     if (ttl > 0) {
       headers.set('Cache-Control', `public, max-age=${ttl}`);
-      stats.cache_hits++;
+      // Note: stats.cache_hits tracks cacheable responses, not actual cache hits
+      // Actual cache hits are handled by Cloudflare's edge cache
     }
   } else {
     headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -608,29 +608,37 @@ async function processResponse(originalResponse, targetDomain, incomingHost, rat
 }
 
 // Simple HTML manipulation (since HTMLRewriter is async/streaming, we use regex for config-based rules)
+// Note: This is a simplified implementation. For complex DOM manipulation, consider using 
+// Cloudflare's native HTMLRewriter API directly.
 function applyHTMLRewriterRules(html) {
   let result = html;
   
   // Remove elements by selector (simple implementation for common patterns)
+  // Uses non-greedy matching with length limits to prevent ReDoS
   for (const selector of config.html_rewriter.remove_elements) {
     // Handle class selectors (.classname)
     if (selector.startsWith('.')) {
       const className = selector.slice(1);
-      const regex = new RegExp(`<[^>]*class="[^"]*\\b${escapeRegExp(className)}\\b[^"]*"[^>]*>.*?</[^>]+>`, 'gis');
+      // Match opening tag with class, then content up to closing tag (non-greedy, limited)
+      const regex = new RegExp(`<([a-z][a-z0-9]*)\\b[^>]*class=["'][^"']*\\b${escapeRegExp(className)}\\b[^"']*["'][^>]*>([\\s\\S]{0,10000}?)<\\/\\1>`, 'gi');
       result = result.replace(regex, '');
     }
     // Handle id selectors (#id)
     else if (selector.startsWith('#')) {
       const id = selector.slice(1);
-      const regex = new RegExp(`<[^>]*id="${escapeRegExp(id)}"[^>]*>.*?</[^>]+>`, 'gis');
+      const regex = new RegExp(`<([a-z][a-z0-9]*)\\b[^>]*id=["']${escapeRegExp(id)}["'][^>]*>([\\s\\S]{0,10000}?)<\\/\\1>`, 'gi');
       result = result.replace(regex, '');
     }
   }
   
-  // Remove attributes
+  // Remove attributes (supports both single and double quotes, and unquoted values)
   for (const rule of config.html_rewriter.remove_attributes) {
     if (rule.selector && rule.attribute) {
-      const attrRegex = new RegExp(`(${escapeRegExp(rule.attribute)}="[^"]*")`, 'gi');
+      // Match attribute with double quotes, single quotes, or no quotes
+      const attrRegex = new RegExp(
+        `\\s${escapeRegExp(rule.attribute)}(?:=(?:"[^"]*"|'[^']*'|[^\\s>]*))?`,
+        'gi'
+      );
       result = result.replace(attrRegex, '');
     }
   }
@@ -647,9 +655,12 @@ function getCustomDomain(targetHostname) {
   // Then check for subdomain matches
   for (const [target, custom] of Object.entries(reverse_map)) {
     if (targetHostname.endsWith('.' + target)) {
-      // Replace the target part with custom part
-      const subdomainPart = targetHostname.slice(0, -target.length);
-      return subdomainPart + custom;
+      // Extract the subdomain prefix (including the trailing dot)
+      const subdomainPrefix = targetHostname.slice(0, -(target.length));
+      // Ensure we handle the dot separator correctly
+      if (subdomainPrefix.endsWith('.')) {
+        return subdomainPrefix + custom;
+      }
     }
   }
   
