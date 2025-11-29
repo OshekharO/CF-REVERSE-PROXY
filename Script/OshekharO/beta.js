@@ -177,6 +177,133 @@ async function createModifiedRequest(originalRequest, targetUrl, targetDomain, i
   });
 }
 
+// HTMLRewriter Element Handler for rewriting URL attributes
+class AttributeRewriter {
+  constructor(attributeName, incomingHost) {
+    this.attributeName = attributeName;
+    this.incomingHost = incomingHost;
+  }
+
+  element(element) {
+    const attribute = element.getAttribute(this.attributeName);
+    if (attribute) {
+      const rewritten = rewriteUrl(attribute, this.incomingHost);
+      if (rewritten !== attribute) {
+        element.setAttribute(this.attributeName, rewritten);
+      }
+    }
+  }
+}
+
+// HTMLRewriter Text Handler for rewriting text content
+class TextRewriter {
+  constructor(incomingHost) {
+    this.incomingHost = incomingHost;
+    this.buffer = '';
+  }
+
+  text(text) {
+    this.buffer += text.text;
+    if (text.lastInTextNode) {
+      const rewritten = rewriteTextContent(this.buffer, this.incomingHost);
+      text.replace(rewritten);
+      this.buffer = '';
+    } else {
+      text.remove();
+    }
+  }
+}
+
+// Rewrite URL to use custom domain
+function rewriteUrl(url, incomingHost) {
+  if (!url) return url;
+  
+  try {
+    // Handle absolute URLs with protocol
+    if (url.startsWith('https://') || url.startsWith('http://')) {
+      const urlObj = new URL(url);
+      if (urlObj.hostname.includes(config.domains.target.main)) {
+        urlObj.hostname = getCustomDomain(urlObj.hostname);
+        urlObj.protocol = 'https:';
+        return urlObj.toString();
+      }
+    }
+    // Handle protocol-relative URLs
+    else if (url.startsWith('//')) {
+      const hostname = url.slice(2).split('/')[0];
+      if (hostname.includes(config.domains.target.main)) {
+        const customDomain = getCustomDomain(hostname);
+        return url.replace(`//${hostname}`, `//${customDomain}`);
+      }
+    }
+  } catch (e) {
+    // If URL parsing fails, return original
+  }
+  
+  return url;
+}
+
+// Rewrite text content to replace target domains
+function rewriteTextContent(text, incomingHost) {
+  let result = text;
+  
+  // Apply text replacements from replace_dict
+  for (const [key, value] of Object.entries(config.replace_dict)) {
+    const re = new RegExp(escapeRegExp(key), 'gi');
+    result = result.replace(re, value);
+  }
+  
+  // Replace all target domain occurrences
+  const allTargetDomains = Object.keys(reverse_map);
+  for (const targetDomain of allTargetDomains) {
+    const customDomain = reverse_map[targetDomain];
+    
+    // Replace full URLs with protocol
+    result = result.replace(
+      new RegExp(`https?://${escapeRegExp(targetDomain)}`, 'gi'),
+      `https://${customDomain}`
+    );
+    
+    // Replace protocol-relative URLs
+    result = result.replace(
+      new RegExp(`//${escapeRegExp(targetDomain)}`, 'gi'),
+      `//${customDomain}`
+    );
+  }
+  
+  return result;
+}
+
+// Create HTMLRewriter with all necessary handlers
+function createHTMLRewriter(incomingHost) {
+  return new HTMLRewriter()
+    // Rewrite href attributes on anchor and link tags
+    .on('a', new AttributeRewriter('href', incomingHost))
+    .on('link', new AttributeRewriter('href', incomingHost))
+    // Rewrite src attributes on various elements
+    .on('img', new AttributeRewriter('src', incomingHost))
+    .on('img', new AttributeRewriter('data-src', incomingHost))
+    .on('img', new AttributeRewriter('srcset', incomingHost))
+    .on('script', new AttributeRewriter('src', incomingHost))
+    .on('iframe', new AttributeRewriter('src', incomingHost))
+    .on('video', new AttributeRewriter('src', incomingHost))
+    .on('audio', new AttributeRewriter('src', incomingHost))
+    .on('source', new AttributeRewriter('src', incomingHost))
+    .on('source', new AttributeRewriter('srcset', incomingHost))
+    // Rewrite action attributes on forms
+    .on('form', new AttributeRewriter('action', incomingHost))
+    // Rewrite content in meta tags for redirects/URLs
+    .on('meta', new AttributeRewriter('content', incomingHost))
+    // Rewrite poster attribute on video elements
+    .on('video', new AttributeRewriter('poster', incomingHost))
+    // Rewrite data attributes that may contain URLs
+    .on('*', new AttributeRewriter('data-url', incomingHost))
+    .on('*', new AttributeRewriter('data-href', incomingHost))
+    // Rewrite inline scripts and styles that may contain URLs
+    .on('script', new TextRewriter(incomingHost))
+    .on('style', new TextRewriter(incomingHost));
+}
+
 async function processResponse(originalResponse, targetDomain, incomingHost) {
   const headers = new Headers(originalResponse.headers);
 
@@ -231,20 +358,36 @@ async function processResponse(originalResponse, targetDomain, incomingHost) {
   }
 
   const contentType = headers.get('content-type') || '';
-  let body;
 
-  // Process all text-based content including JSON and JavaScript
+  // Use HTMLRewriter for HTML content (streaming, more efficient)
+  if (contentType.includes('text/html')) {
+    const rewriter = createHTMLRewriter(incomingHost);
+    const transformedResponse = rewriter.transform(
+      new Response(originalResponse.body, {
+        status: originalResponse.status,
+        statusText: originalResponse.statusText,
+        headers
+      })
+    );
+    return transformedResponse;
+  }
+
+  // Use regex-based replacement for non-HTML text content (JSON, JavaScript, CSS)
   if (contentType.includes('text/') || 
       contentType.includes('application/json') || 
       contentType.includes('application/javascript') ||
       contentType.includes('application/x-javascript')) {
     const text = await originalResponse.text();
-    body = await replace_all_domains(text, incomingHost);
-  } else {
-    body = originalResponse.body;
+    const body = await replace_all_domains(text, incomingHost);
+    return new Response(body, {
+      status: originalResponse.status,
+      statusText: originalResponse.statusText,
+      headers
+    });
   }
 
-  return new Response(body, {
+  // Return binary content as-is
+  return new Response(originalResponse.body, {
     status: originalResponse.status,
     statusText: originalResponse.statusText,
     headers
