@@ -195,18 +195,24 @@ class AttributeRewriter {
   }
 }
 
-// HTMLRewriter Element Handler for srcset attributes (multiple URLs with descriptors)
-class SrcsetRewriter {
-  constructor(incomingHost) {
+// HTMLRewriter Element Handler for elements with multiple URL attributes
+class MultiAttributeRewriter {
+  constructor(attributes, incomingHost) {
+    this.attributes = attributes;
     this.incomingHost = incomingHost;
   }
 
   element(element) {
-    const srcset = element.getAttribute('srcset');
-    if (srcset) {
-      const rewritten = rewriteSrcset(srcset, this.incomingHost);
-      if (rewritten !== srcset) {
-        element.setAttribute('srcset', rewritten);
+    for (const attr of this.attributes) {
+      const value = element.getAttribute(attr);
+      if (value) {
+        // Special handling for srcset attribute
+        const rewritten = attr === 'srcset' 
+          ? rewriteSrcset(value, this.incomingHost)
+          : rewriteUrl(value, this.incomingHost);
+        if (rewritten !== value) {
+          element.setAttribute(attr, rewritten);
+        }
       }
     }
   }
@@ -309,18 +315,11 @@ function rewriteSrcset(srcset, incomingHost) {
   }).join(', ');
 }
 
-// Rewrite text content to replace target domains
-function rewriteTextContent(text, incomingHost) {
+// Replace domain occurrences in text (shared logic for rewriteTextContent and replace_all_domains)
+function replaceDomains(text) {
   let result = text;
-  
-  // Apply text replacements from replace_dict
-  for (const [key, value] of Object.entries(config.replace_dict)) {
-    const re = new RegExp(escapeRegExp(key), 'gi');
-    result = result.replace(re, value);
-  }
-  
-  // Replace all target domain occurrences
   const allTargetDomains = Object.keys(reverse_map);
+  
   for (const targetDomain of allTargetDomains) {
     const customDomain = reverse_map[targetDomain];
     
@@ -340,31 +339,42 @@ function rewriteTextContent(text, incomingHost) {
   return result;
 }
 
+// Apply text replacements from replace_dict
+function applyReplaceDict(text) {
+  let result = text;
+  for (const [key, value] of Object.entries(config.replace_dict)) {
+    const re = new RegExp(escapeRegExp(key), 'gi');
+    result = result.replace(re, value);
+  }
+  return result;
+}
+
+// Rewrite text content to replace target domains (for HTMLRewriter)
+function rewriteTextContent(text, incomingHost) {
+  let result = applyReplaceDict(text);
+  return replaceDomains(result);
+}
+
 // Create HTMLRewriter with all necessary handlers
 function createHTMLRewriter(incomingHost) {
   return new HTMLRewriter()
     // Rewrite href attributes on anchor and link tags
     .on('a', new AttributeRewriter('href', incomingHost))
     .on('link', new AttributeRewriter('href', incomingHost))
-    // Rewrite src attributes on various elements
-    .on('img', new AttributeRewriter('src', incomingHost))
-    .on('img', new AttributeRewriter('data-src', incomingHost))
-    .on('img', new SrcsetRewriter(incomingHost))
+    // Rewrite multiple attributes on media elements
+    .on('img', new MultiAttributeRewriter(['src', 'data-src', 'srcset'], incomingHost))
+    .on('video', new MultiAttributeRewriter(['src', 'poster'], incomingHost))
+    .on('audio', new AttributeRewriter('src', incomingHost))
+    .on('source', new MultiAttributeRewriter(['src', 'srcset'], incomingHost))
+    // Rewrite src on script and iframe
     .on('script', new AttributeRewriter('src', incomingHost))
     .on('iframe', new AttributeRewriter('src', incomingHost))
-    .on('video', new AttributeRewriter('src', incomingHost))
-    .on('audio', new AttributeRewriter('src', incomingHost))
-    .on('source', new AttributeRewriter('src', incomingHost))
-    .on('source', new SrcsetRewriter(incomingHost))
     // Rewrite action attributes on forms
     .on('form', new AttributeRewriter('action', incomingHost))
     // Rewrite content in meta tags that contain URLs (og:url, og:image, twitter:url, etc.)
     .on('meta', new MetaRewriter(incomingHost))
-    // Rewrite poster attribute on video elements
-    .on('video', new AttributeRewriter('poster', incomingHost))
     // Rewrite data attributes that may contain URLs
-    .on('*', new AttributeRewriter('data-url', incomingHost))
-    .on('*', new AttributeRewriter('data-href', incomingHost))
+    .on('*', new MultiAttributeRewriter(['data-url', 'data-href'], incomingHost))
     // Rewrite inline scripts and styles that may contain URLs
     .on('script', new TextRewriter(incomingHost))
     .on('style', new TextRewriter(incomingHost));
@@ -480,31 +490,15 @@ function getCustomDomain(targetHostname) {
 }
 
 async function replace_all_domains(text, incomingHost) {
-  let replaced_text = text;
+  // Apply replace_dict and basic domain replacements using shared functions
+  let replaced_text = applyReplaceDict(text);
+  replaced_text = replaceDomains(replaced_text);
 
-  // Apply text replacements from replace_dict
-  for (const [key, value] of Object.entries(config.replace_dict)) {
-    const re = new RegExp(escapeRegExp(key), 'gi');
-    replaced_text = replaced_text.replace(re, value);
-  }
-
-  // Replace all domain occurrences - handle all variations
+  // Additional replacements specific to non-HTML content (JSON/JavaScript)
   const allTargetDomains = Object.keys(reverse_map);
   
   for (const targetDomain of allTargetDomains) {
     const customDomain = reverse_map[targetDomain];
-    
-    // Replace full URLs with protocol
-    replaced_text = replaced_text.replace(
-      new RegExp(`https?://${escapeRegExp(targetDomain)}`, 'gi'),
-      `https://${customDomain}`
-    );
-    
-    // Replace protocol-relative URLs
-    replaced_text = replaced_text.replace(
-      new RegExp(`//${escapeRegExp(targetDomain)}`, 'gi'),
-      `//${customDomain}`
-    );
     
     // Replace in JSON/JavaScript contexts (quoted)
     replaced_text = replaced_text.replace(
