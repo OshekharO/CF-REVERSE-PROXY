@@ -270,7 +270,9 @@ function getCacheTTL(contentType) {
   for (const [pattern, ttl] of Object.entries(config.cache.ttl)) {
     if (pattern === 'default') continue;
     if (pattern.includes('*')) {
-      const regex = new RegExp(pattern.replace('*', '.*'));
+      // Replace all occurrences of '*' with '.*' for regex matching
+      const regexPattern = pattern.replace(/\*/g, '.*');
+      const regex = new RegExp(regexPattern);
       if (regex.test(contentType)) return ttl;
     } else if (contentType.includes(pattern)) {
       return ttl;
