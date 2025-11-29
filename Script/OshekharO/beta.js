@@ -195,6 +195,51 @@ class AttributeRewriter {
   }
 }
 
+// HTMLRewriter Element Handler for srcset attributes (multiple URLs with descriptors)
+class SrcsetRewriter {
+  constructor(incomingHost) {
+    this.incomingHost = incomingHost;
+  }
+
+  element(element) {
+    const srcset = element.getAttribute('srcset');
+    if (srcset) {
+      const rewritten = rewriteSrcset(srcset, this.incomingHost);
+      if (rewritten !== srcset) {
+        element.setAttribute('srcset', rewritten);
+      }
+    }
+  }
+}
+
+// HTMLRewriter Element Handler for meta tags with URL content
+class MetaRewriter {
+  constructor(incomingHost) {
+    this.incomingHost = incomingHost;
+  }
+
+  element(element) {
+    const httpEquiv = element.getAttribute('http-equiv');
+    const property = element.getAttribute('property');
+    const name = element.getAttribute('name');
+    const content = element.getAttribute('content');
+    
+    if (!content) return;
+    
+    // Only rewrite content for meta tags that are known to contain URLs
+    const isRefresh = httpEquiv && httpEquiv.toLowerCase() === 'refresh';
+    const isOgUrl = property && (property === 'og:url' || property === 'og:image' || property === 'og:video');
+    const isTwitterUrl = name && (name === 'twitter:url' || name === 'twitter:image');
+    
+    if (isRefresh || isOgUrl || isTwitterUrl) {
+      const rewritten = rewriteUrl(content, this.incomingHost);
+      if (rewritten !== content) {
+        element.setAttribute('content', rewritten);
+      }
+    }
+  }
+}
+
 // HTMLRewriter Text Handler for rewriting text content
 class TextRewriter {
   constructor(incomingHost) {
@@ -214,6 +259,12 @@ class TextRewriter {
   }
 }
 
+// Check if hostname matches target domain (exact match or subdomain)
+function isTargetDomain(hostname) {
+  const targetMain = config.domains.target.main;
+  return hostname === targetMain || hostname.endsWith('.' + targetMain);
+}
+
 // Rewrite URL to use custom domain
 function rewriteUrl(url, incomingHost) {
   if (!url) return url;
@@ -222,7 +273,7 @@ function rewriteUrl(url, incomingHost) {
     // Handle absolute URLs with protocol
     if (url.startsWith('https://') || url.startsWith('http://')) {
       const urlObj = new URL(url);
-      if (urlObj.hostname.includes(config.domains.target.main)) {
+      if (isTargetDomain(urlObj.hostname)) {
         urlObj.hostname = getCustomDomain(urlObj.hostname);
         urlObj.protocol = 'https:';
         return urlObj.toString();
@@ -231,16 +282,31 @@ function rewriteUrl(url, incomingHost) {
     // Handle protocol-relative URLs
     else if (url.startsWith('//')) {
       const hostname = url.slice(2).split('/')[0];
-      if (hostname.includes(config.domains.target.main)) {
+      if (isTargetDomain(hostname)) {
         const customDomain = getCustomDomain(hostname);
         return url.replace(`//${hostname}`, `//${customDomain}`);
       }
     }
   } catch (e) {
-    // If URL parsing fails, return original
+    // URL parsing may fail for malformed URLs or relative paths - return original
   }
   
   return url;
+}
+
+// Rewrite srcset attribute (handles multiple URLs with descriptors)
+function rewriteSrcset(srcset, incomingHost) {
+  if (!srcset) return srcset;
+  
+  // srcset format: "url1 1x, url2 2x" or "url1 100w, url2 200w"
+  return srcset.split(',').map(entry => {
+    const trimmed = entry.trim();
+    const parts = trimmed.split(/\s+/);
+    if (parts.length >= 1) {
+      parts[0] = rewriteUrl(parts[0], incomingHost);
+    }
+    return parts.join(' ');
+  }).join(', ');
 }
 
 // Rewrite text content to replace target domains
@@ -283,17 +349,17 @@ function createHTMLRewriter(incomingHost) {
     // Rewrite src attributes on various elements
     .on('img', new AttributeRewriter('src', incomingHost))
     .on('img', new AttributeRewriter('data-src', incomingHost))
-    .on('img', new AttributeRewriter('srcset', incomingHost))
+    .on('img', new SrcsetRewriter(incomingHost))
     .on('script', new AttributeRewriter('src', incomingHost))
     .on('iframe', new AttributeRewriter('src', incomingHost))
     .on('video', new AttributeRewriter('src', incomingHost))
     .on('audio', new AttributeRewriter('src', incomingHost))
     .on('source', new AttributeRewriter('src', incomingHost))
-    .on('source', new AttributeRewriter('srcset', incomingHost))
+    .on('source', new SrcsetRewriter(incomingHost))
     // Rewrite action attributes on forms
     .on('form', new AttributeRewriter('action', incomingHost))
-    // Rewrite content in meta tags for redirects/URLs
-    .on('meta', new AttributeRewriter('content', incomingHost))
+    // Rewrite content in meta tags that contain URLs (og:url, og:image, twitter:url, etc.)
+    .on('meta', new MetaRewriter(incomingHost))
     // Rewrite poster attribute on video elements
     .on('video', new AttributeRewriter('poster', incomingHost))
     // Rewrite data attributes that may contain URLs
@@ -330,7 +396,7 @@ async function processResponse(originalResponse, targetDomain, incomingHost) {
     if (loc) {
       try {
         const u = new URL(loc, `https://${targetDomain}`);
-        if (u.hostname.includes(config.domains.target.main)) {
+        if (isTargetDomain(u.hostname)) {
           u.hostname = getCustomDomain(u.hostname);
           headers.set('location', u.toString());
         }
@@ -345,7 +411,7 @@ async function processResponse(originalResponse, targetDomain, incomingHost) {
     const pjaxUrl = headers.get('X-Pjax-Url');
     try {
       const pjaxUrlObj = new URL(pjaxUrl);
-      if (pjaxUrlObj.hostname.includes(config.domains.target.main)) {
+      if (isTargetDomain(pjaxUrlObj.hostname)) {
         const customDomain = getCustomDomain(pjaxUrlObj.hostname);
         pjaxUrlObj.hostname = customDomain;
         headers.set('X-Pjax-Url', pjaxUrlObj.toString());
