@@ -1,45 +1,100 @@
-# Reverse Proxy for Cloudflare Worker
-A reverse proxy for Cloudflare Worker with some additional features:
-1. Miltiple site in one worker
-2. String replacement
-3. Custom resource replacment
-3. [cloudflare email-protection](https://support.cloudflare.com/hc/en-us/articles/200170016-What-is-Email-Address-Obfuscation-) bypass.
+# Reverse Proxy — KusakabeSi
 
-## Demo
-1. https://wix.kskb.eu.org
-1. https://proxy.oshekher.workers.dev
-1. https://uwiki.kskb.eu.org 
-1. https://revdemo.kskb.eu.org
-1. https://blog.kskb.eu.org
-1. https://blog.wget.date
+> A multi-site Cloudflare Worker reverse proxy with string replacement, custom resource mapping, ad removal, and Cloudflare email-obfuscation bypass.
 
+---
 
-## How to use:
+## ✨ Features
 
-Create a cloudflare worker  
-Checkout my [worker.js](https://github.com/OshekharO/CF-REVERSE-PROXY/blob/main/Script/KusakabeSi/worker.js), copy and paste to your cloudflare worker.  
-Then modify the `reverse ` section, fill the infomatoin based on my [reverse_demo.js](https://github.com/OshekharO/CF-REVERSE-PROXY/blob/main/Script/KusakabeSi/reverse_demo.js).
+- 🌐 **Multiple upstream sites** in a single Worker — each incoming hostname maps to its own target
+- 🔁 **String replacement** — substitute any text string in proxied HTML/JS/JSON responses
+- 🔗 **Custom resource mapping** — redirect specific paths to entirely different URLs
+- 🔀 **302 Redirects** — configure path-level redirects per site
+- 🛡️ **Cloudflare email-obfuscation bypass** — decode Cloudflare-encoded email addresses in proxied pages
+- 🚫 **Ad removal** — strip ad-injecting `<script>` and `<iframe>` blocks from pages
 
-## code
+---
 
-        // Remove ads from scripts
-        const scriptPattern = /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi;
-        html = html.replace(scriptPattern, (match, p1) => {
-            if (match.includes("ads")) {
-                return "";
-            } else {
-                return match;
-            }
-        });
-        
-        // Remove ads from iframes
-        const iframePattern = /<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi;
-        html = html.replace(iframePattern, (match, p1) => {
-            if (match.includes("ads")) {
-                return "";
-            } else {
-                return match;
-            }
-        });
+## 🚀 Deploy
 
-Need to be placed in response(req)
+1. Go to [dash.cloudflare.com](https://dash.cloudflare.com) → **Workers & Pages** → **Create Application** → **Create Worker**.
+2. Open [`worker.js`](https://github.com/OshekharO/CF-REVERSE-PROXY/blob/main/Script/KusakabeSi/worker.js), copy its full contents, and paste them into the online editor.
+3. Edit the `reverse` configuration object (see [Configuration](#️-configuration) below).
+4. Click **Save and Deploy**.
+5. Bind each domain listed in your `reverse` config to the Worker via **Workers** → **Add Route** in your domain dashboard.
+
+---
+
+## ⚙️ Configuration
+
+The entire configuration lives in the `reverse` object at the top of `worker.js`. Each key is an **incoming hostname** (your custom domain); the value describes how to handle requests for that host.
+
+```js
+reverse = {
+    "proxy.yourdomain.com": {
+        // Protocol of the upstream site: "http" or "https"
+        "protocol": "https",
+
+        // The upstream hostname to proxy to
+        "host": "www.example.com",
+
+        // Text replacements applied to all HTML/JS/JSON responses
+        "replace": {
+            "Example": "Demo",
+            "Download App": "Install"
+        },
+
+        // Map specific incoming paths to different upstream paths or full URLs
+        "reverse": {
+            "/":          "/home",
+            "/logo.png":  "https://cdn.yourdomain.com/logo.png"
+        },
+
+        // Respond with a 302 redirect for specific incoming paths
+        "redirect": {
+            "/old-path": "/new-path"
+        }
+    }
+}
+```
+
+See [`reverse_demo.js`](https://github.com/OshekharO/CF-REVERSE-PROXY/blob/main/Script/KusakabeSi/reverse_demo.js) for a full worked example with multiple sites.
+
+---
+
+## 📖 Configuration Reference
+
+| Field | Type | Description |
+|---|---|---|
+| `protocol` | `string` | `"http"` or `"https"` — protocol used to connect to the upstream |
+| `host` | `string` | Upstream hostname (e.g., `"en.wikipedia.org"`) |
+| `replace` | `Object` | Key → value text substitutions applied to all text responses |
+| `reverse` | `Object` | Incoming path → upstream path or full URL override |
+| `redirect` | `Object` | Incoming path → URL; responds with a `302` redirect |
+
+---
+
+## 🚫 Ad Removal
+
+To strip ad blocks from proxied pages, add the following snippet inside the `response(req)` handler in `worker.js`:
+
+```js
+// Remove ad-injecting <script> blocks
+const scriptPattern = /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi;
+html = html.replace(scriptPattern, match =>
+    match.includes('ads') ? '' : match
+);
+
+// Remove ad-injecting <iframe> blocks
+const iframePattern = /<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi;
+html = html.replace(iframePattern, match =>
+    match.includes('ads') ? '' : match
+);
+```
+
+---
+
+## 📄 License
+
+MIT — part of [OshekharO/CF-REVERSE-PROXY](https://github.com/OshekharO/CF-REVERSE-PROXY).
+Original script by [KusakabeSi](https://github.com/KusakabeSi).
