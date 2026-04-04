@@ -130,7 +130,7 @@ Specifically designed to reverse-proxy **Telegram channel preview** pages, strip
 
 ### [`ymyuuu/worker.js`](Script/ymyuuu/worker.js)
 
-A straightforward general-purpose reverse proxy with CORS headers, relative-to-absolute path rewriting, redirect handling, and a user-friendly input UI when no target URL is provided.
+A rewritten general-purpose open proxy using modern ES-module Workers syntax. Features Bootstrap 5 glassmorphism UI, CORS preflight handling, security headers, CSP removal, improved HTML path rewriting (`href`, `src`, `action`, `data-src`), and suffix-based domain blocklist matching.
 
 ---
 
