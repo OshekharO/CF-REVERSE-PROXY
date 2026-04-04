@@ -1,85 +1,97 @@
-# Introduction
+# Workers-Proxy — xiaoyang-sde
 
-Workers-Proxy is a lightweight Javascript [Reverse Proxy](https://www.cloudflare.com/learning/cdn/glossary/reverse-proxy/) based on [Cloudflare Workers](https://workers.cloudflare.com/).
+> The original lightweight JavaScript [Reverse Proxy](https://www.cloudflare.com/learning/cdn/glossary/reverse-proxy/) built for [Cloudflare Workers](https://workers.cloudflare.com/).
 
-Users could deploy the reverse proxy on Cloudflare's global network without setting up virtual private servers and configuring Nginx or Apache.
+Deploy a fully functional reverse proxy on Cloudflare's global edge network — no VMs, no servers, no Nginx configuration required.
 
-### Features
+---
 
-* Build mirror websites
-* Improve loading speed with Cloudflare's global network
-* Increase security (Hide IP addresses of websites)
-* Block specific areas or IP addresses
-* Redirect mobile users to different web pages
+## ✨ Features
 
-## Getting Started
+- 🪞 Build mirror / proxy websites for any upstream
+- 🚀 Improve loading speed via Cloudflare's global network
+- 🔐 Hide the origin server's IP address
+- 🚫 Block specific countries/regions or IP addresses
+- 📱 Redirect mobile visitors to a different upstream
+- 🔁 Text replacement in response bodies
 
-### Build and Deploy
+---
 
-#### Deploy manually
+## 🚀 Deploy
 
-1. Navigate to [Cloudflare Workers](https://workers.cloudflare.com), register or sign in your Cloudflare account, and set custom subdomain for workers, and create a new Worker.
+### Step 1 — Create a Cloudflare Worker
 
-2. Customize '[src/index.js](https://github.com/OshekharO/CF-REVERSE-PROXY/blob/main/Script/xiaoyang-sde/index.js)', paste the code into Cloudflare online editor to replace the default one.
+1. Go to [dash.cloudflare.com](https://dash.cloudflare.com) → **Workers & Pages** → **Create Application** → **Create Worker**.
+2. Open [`index.js`](https://github.com/OshekharO/CF-REVERSE-PROXY/blob/main/Script/xiaoyang-sde/index.js), copy its full contents, and paste them into the online editor (replacing the default code).
+3. Click **Save and Deploy**.
 
-3. Change name of your Worker, save and deploy it, and check whether its performance fulfills your demand.
+### Step 2 — Bind to a Custom Domain
 
-### Bind to Custom Domain
+1. Make sure your domain is added to Cloudflare (orange-cloud DNS).
+2. In your domain's dashboard, go to **Workers** → **Add Route**.
+3. Set the route to `https://<your-domain>/*` and select the Worker you just created.
+4. Add a `CNAME` DNS record:
+   - **Name:** your subdomain (e.g., `proxy`) or `@` for root
+   - **Target:** `<your-worker-name>.workers.dev`
+   - **Proxy status:** Proxied ☁️
 
-1. Check whether your domain is currently under Cloudflare's protection.
+---
 
-2. Navigate to the dashboard of your domain, select 'Workers' page, and click on 'Add Route'.
+## ⚙️ Configuration
 
-3. Type `https://<domain_name>/*` in `Route` and select the Worker you created previously.
+Edit the constants at the top of `index.js`:
 
-4. Add a CNAME DNS record for your custom domain. Concretely, enter the subdomain (or '@' for root) in the 'Name' field, enter the **second level domain** of your workers in the 'Target' field, and set 'Proxy status' to 'Proxied'.
-
-### Customize index.js
-
-Basically, there are a few constants on the top of the 'index.js' file.
-
-To customize your own Workers-Proxy Service, you should edit these constants according to your demands.
-
-```
-// Website you intended to retrieve for users.
+```js
+// The upstream website to proxy.
 const upstream = 'www.google.com'
 
-// Custom pathname for the upstream website.
+// Path prefix for all upstream requests.
 const upstream_path = '/'
 
-// Website you intended to retrieve for users using mobile devices.
+// Upstream for mobile device visitors.
 const upstream_mobile = 'www.google.com'
 
-// Countries and regions where you wish to suspend your service.
+// Countries/regions to block (ISO 3166-1 alpha-2 codes).
 const blocked_region = ['CN', 'KP', 'SY', 'PK', 'CU']
 
-// IP addresses which you wish to block from using your service.
+// IP addresses to block.
 const blocked_ip_address = ['0.0.0.0', '127.0.0.1']
 
-// Whether to use HTTPS protocol for upstream address.
+// Force HTTPS for all upstream requests.
 const https = true
 
-// Whether to disable cache.
+// Disable response caching.
 const disable_cache = false
 
-// Replace texts.
+// Text replacement map applied to all response bodies.
 const replace_dict = {
     '$upstream': '$custom_domain',
     '//google.com': ''
 }
 ```
 
-### Websites with Multiple Domains
+---
 
-If the website uses another domain name to serve static resources, users could deploy multiple Workers-Proxy and configure text replacement.
+## 🌐 Proxying Sites with Multiple Domains
 
-1. **www.google.com** serve static resources on **www.gstatic.com**
-2. Deploy **Workers-Proxy A** to proxy **www.gstatic.com**
-3. Deploy **Workers-Proxy B** to proxy **www.google.com**
-4. Configure text replacement for **Workers-Proxy B**:
-```
+Many websites load static assets (images, scripts, fonts) from a separate CDN domain. To proxy those correctly, deploy a second Worker for the CDN domain and wire the two together via `replace_dict`.
+
+**Example — proxying Google (assets on gstatic.com):**
+
+1. Deploy **Worker A** to proxy `www.gstatic.com` → bound to `static.yourdomain.com`
+2. Deploy **Worker B** to proxy `www.google.com` → bound to `proxy.yourdomain.com`
+3. In **Worker B**, add the following replacement so asset URLs point to your Worker A:
+
+```js
 const replace_dict = {
     '$upstream': '$custom_domain',
-    'www.gstatic.com': '<Domain name of Workers-Proxy A>'
+    'www.gstatic.com': 'static.yourdomain.com'
 }
 ```
+
+---
+
+## 📄 License
+
+MIT — part of [OshekharO/CF-REVERSE-PROXY](https://github.com/OshekharO/CF-REVERSE-PROXY).
+Original script by [xiaoyang-sde](https://github.com/xiaoyang-sde).
