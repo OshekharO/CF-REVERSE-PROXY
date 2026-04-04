@@ -173,19 +173,11 @@ A straightforward general-purpose reverse proxy with CORS headers, relative-to-a
 
 ---
 
-## 💬 Support
-
-For questions or help, reach out via Telegram: [@OshekherO](https://t.me/OshekherO)
-
-> Please verify your configuration is correct before asking for support.
-
----
-
 ## 📄 License
 
 This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
 
 ---
 
-<p align="center">© 2024 OshekharO · CF-REVERSE-PROXY</p>
+<p align="center">© 2026 OshekharO · CF-REVERSE-PROXY</p>
 
