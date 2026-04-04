@@ -58,9 +58,9 @@ async function handleRequest(request) {
   // e.g.  /https://example.com/path  →  https://example.com/path
   let targetStr = decodeURIComponent(url.pathname.slice(1));
 
-  // Prepend protocol if missing
+  // Prepend protocol if missing — always default to https
   if (!/^https?:\/\//i.test(targetStr)) {
-    targetStr = `${url.protocol}//${targetStr}`;
+    targetStr = `https://${targetStr}`;
   }
 
   // Append original query string
@@ -155,9 +155,9 @@ function rewriteRedirect(response, proxyUrl) {
   applyCorsHeaders(headers, null);
 
   if (location) {
-    let absolute = location;
-    try { absolute = new URL(location).toString(); } catch { /* keep as-is */ }
-    headers.set('Location', `${proxyUrl.origin}/${encodeURIComponent(absolute)}`);
+    let resolvedLocation = location;
+    try { resolvedLocation = new URL(location).toString(); } catch { /* keep as-is */ }
+    headers.set('Location', `${proxyUrl.origin}/${encodeURIComponent(resolvedLocation)}`);
   }
 
   return new Response(null, { status: response.status, headers });
@@ -365,7 +365,7 @@ function getLandingPage() {
 
     function isValidUrl(str) {
       try {
-        const u = new URL(/^https?:\/\//i.test(str) ? str : 'https://' + str);
+        const u = new URL(/^https?:\/\//i.test(str) ? str : `https://${str}`);
         return u.protocol === 'http:' || u.protocol === 'https:';
       } catch { return false; }
     }
