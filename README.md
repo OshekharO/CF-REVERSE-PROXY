@@ -126,7 +126,7 @@ Supports multiple upstream sites within a single Worker. Includes string replace
 
 ### [`Clansty/proxy.js`](Script/Clansty/proxy.js)
 
-Specifically designed to reverse-proxy **Telegram channel preview** pages, stripping the headers that prevent embedding so the channel can be shown in an `<iframe>` on your own website.
+Rewritten Telegram channel preview proxy using modern ES-module Workers syntax. Auto-detects its own `BASE_URL`, strips `X-Frame-Options` and `Content-Security-Policy` so the channel loads in an `<iframe>`, rewrites all Telegram CDN and asset URLs through the Worker, and handles "Load more" AJAX calls for infinite scroll.
 
 ### [`ymyuuu/worker.js`](Script/ymyuuu/worker.js)
 
