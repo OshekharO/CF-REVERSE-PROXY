@@ -232,131 +232,373 @@ function getLandingPage() {
   <meta name="robots" content="index, follow">
   <title>CF Reverse Proxy</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔗</text></svg>">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" crossorigin="anonymous">
   <style>
-    :root {
-      --glass-bg: rgba(255, 255, 255, 0.10);
-      --glass-border: rgba(255, 255, 255, 0.22);
-      --blur: 20px;
-    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
       min-height: 100vh;
-      background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+      background: linear-gradient(135deg, #0f0c29 0%, #302b63 55%, #24243e 100%);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+
+    /* Decorative glow orbs */
+    body::before, body::after {
+      content: '';
+      position: fixed;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 0;
+    }
+    body::before {
+      width: 700px; height: 700px;
+      background: radial-gradient(circle, rgba(108,99,255,0.22) 0%, transparent 65%);
+      top: -200px; left: -200px;
+    }
+    body::after {
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(62,207,207,0.18) 0%, transparent 65%);
+      bottom: -150px; right: -150px;
+    }
+
+    /* ── Header ─────────────────────────────── */
+    header {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.25rem 3rem;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .header-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      font-size: 1rem;
+      font-weight: 700;
+      color: rgba(255,255,255,0.9);
+      letter-spacing: -0.2px;
+    }
+    .header-logo .emoji { font-size: 1.3rem; }
+    .header-nav {
+      display: flex;
+      gap: 1.5rem;
+      align-items: center;
+    }
+    .header-nav a {
+      font-size: 0.82rem;
+      color: rgba(255,255,255,0.45);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    .header-nav a:hover { color: #fff; }
+
+    /* ── Main two-column layout ─────────────── */
+    .main {
+      position: relative;
+      z-index: 1;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 5rem;
+      padding: 4rem 3rem;
+      max-width: 1200px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    /* ── Hero (left) ────────────────────────── */
+    .hero {
+      flex: 1;
+      min-width: 0;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(108,99,255,0.18);
+      border: 1px solid rgba(108,99,255,0.38);
+      border-radius: 999px;
+      padding: 0.28rem 0.9rem;
+      font-size: 0.74rem;
+      color: #b0aaff;
+      margin-bottom: 1.5rem;
+      letter-spacing: 0.3px;
+    }
+    .hero h1 {
+      font-size: clamp(2rem, 3.5vw, 3rem);
+      font-weight: 800;
+      line-height: 1.18;
+      letter-spacing: -1px;
+      margin-bottom: 1.1rem;
+      background: linear-gradient(130deg, #ffffff 35%, #b0aaff 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero p {
+      color: rgba(255,255,255,0.5);
+      font-size: 1rem;
+      line-height: 1.75;
+      margin-bottom: 2.5rem;
+      max-width: 400px;
+    }
+    .feature-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .feature-list li {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      font-size: 0.88rem;
+      color: rgba(255,255,255,0.65);
+    }
+    .feature-list li strong { color: rgba(255,255,255,0.88); }
+    .feat-icon {
+      width: 34px; height: 34px;
+      flex-shrink: 0;
+      border-radius: 9px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem;
+    }
+
+    /* ── Form card (right) ──────────────────── */
+    .form-card {
+      flex-shrink: 0;
+      width: 100%;
+      max-width: 420px;
+      background: rgba(255,255,255,0.07);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 1.5rem;
+      padding: 2.4rem 2.2rem;
+      box-shadow: 0 12px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.07);
+    }
+    .form-card h2 {
+      font-size: 1.2rem;
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+    }
+    .form-sub {
+      font-size: 0.82rem;
+      color: rgba(255,255,255,0.42);
+      margin-bottom: 1.8rem;
+    }
+    .field-label {
+      display: block;
+      font-size: 0.74rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: rgba(255,255,255,0.5);
+      margin-bottom: 0.45rem;
+    }
+    .proxy-input {
+      width: 100%;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 0.75rem;
+      color: #fff;
+      padding: 0.78rem 1rem;
+      font-size: 0.92rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+    }
+    .proxy-input::placeholder { color: rgba(255,255,255,0.25); }
+    .proxy-input:focus {
+      background: rgba(255,255,255,0.1);
+      border-color: rgba(108,99,255,0.65);
+      box-shadow: 0 0 0 3px rgba(108,99,255,0.18);
+    }
+    .error-msg {
+      color: #ff8a8a;
+      font-size: 0.78rem;
+      margin-top: 0.42rem;
+      display: none;
+    }
+    .btn-proxy {
       display: flex;
       align-items: center;
       justify-content: center;
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      padding: 1.25rem;
-    }
-    .glass-card {
-      background: var(--glass-bg);
-      backdrop-filter: blur(var(--blur));
-      -webkit-backdrop-filter: blur(var(--blur));
-      border: 1px solid var(--glass-border);
-      border-radius: 1.5rem;
-      padding: 2.5rem 2rem;
+      gap: 0.5rem;
       width: 100%;
-      max-width: 520px;
-      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
-      color: #fff;
-    }
-    .badge-pill {
-      display: inline-block;
-      background: rgba(255, 255, 255, 0.12);
-      border-radius: 999px;
-      padding: 0.2rem 0.8rem;
-      font-size: 0.72rem;
-      letter-spacing: 0.4px;
-      margin-bottom: 1.1rem;
-      color: rgba(255, 255, 255, 0.65);
-    }
-    .glass-card h1 {
-      font-size: 1.75rem;
-      font-weight: 700;
-      letter-spacing: -0.4px;
-      margin-bottom: 0.4rem;
-    }
-    .glass-card .subtitle {
-      color: rgba(255, 255, 255, 0.58);
-      font-size: 0.88rem;
-      margin-bottom: 1.75rem;
-    }
-    .proxy-input {
-      background: rgba(255, 255, 255, 0.08) !important;
-      border: 1px solid rgba(255, 255, 255, 0.2) !important;
-      border-radius: 0.75rem !important;
-      color: #fff !important;
-      padding: 0.72rem 1rem !important;
-      font-size: 0.95rem;
-      transition: border-color 0.2s, box-shadow 0.2s;
-    }
-    .proxy-input::placeholder { color: rgba(255, 255, 255, 0.38); }
-    .proxy-input:focus {
-      background: rgba(255, 255, 255, 0.13) !important;
-      border-color: rgba(255, 255, 255, 0.48) !important;
-      box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.10) !important;
-      outline: none;
-      color: #fff !important;
-    }
-    .btn-proxy {
+      margin-top: 1rem;
+      padding: 0.82rem 1.5rem;
       background: linear-gradient(90deg, #6c63ff, #3ecfcf);
       border: none;
       border-radius: 0.75rem;
       color: #fff;
-      font-weight: 600;
-      padding: 0.72rem 1.5rem;
-      width: 100%;
-      font-size: 1rem;
+      font-weight: 700;
+      font-size: 0.95rem;
       cursor: pointer;
-      transition: opacity 0.2s, transform 0.1s;
+      font-family: inherit;
+      transition: opacity 0.2s, transform 0.12s, box-shadow 0.2s;
+      box-shadow: 0 4px 22px rgba(108,99,255,0.38);
     }
-    .btn-proxy:hover  { opacity: 0.87; }
+    .btn-proxy:hover  { opacity: 0.88; box-shadow: 0 6px 30px rgba(108,99,255,0.55); }
     .btn-proxy:active { transform: scale(0.98); }
-    .error-msg {
-      color: #ff8a8a;
-      font-size: 0.82rem;
-      margin-top: 0.35rem;
-      display: none;
+
+    .divider {
+      height: 1px;
+      background: rgba(255,255,255,0.08);
+      margin: 1.6rem 0;
     }
+    .steps {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.7rem;
+      font-size: 0.79rem;
+      color: rgba(255,255,255,0.4);
+      line-height: 1.5;
+    }
+    .step-num {
+      flex-shrink: 0;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: rgba(108,99,255,0.22);
+      font-size: 0.68rem;
+      font-weight: 700;
+      color: #b0aaff;
+      display: flex; align-items: center; justify-content: center;
+      margin-top: 1px;
+    }
+
+    /* ── Footer ─────────────────────────────── */
     footer {
-      margin-top: 1.6rem;
-      font-size: 0.72rem;
-      color: rgba(255, 255, 255, 0.32);
+      position: relative;
+      z-index: 1;
       text-align: center;
+      padding: 1.25rem 3rem;
+      font-size: 0.72rem;
+      color: rgba(255,255,255,0.22);
+      border-top: 1px solid rgba(255,255,255,0.05);
     }
-    footer a { color: rgba(255, 255, 255, 0.42); text-decoration: none; }
+    footer a { color: rgba(255,255,255,0.32); text-decoration: none; transition: color 0.2s; }
     footer a:hover { color: #fff; }
+
+    /* ── Responsive ─────────────────────────── */
+    @media (max-width: 860px) {
+      .main { flex-direction: column; align-items: stretch; gap: 2.5rem; padding: 2.5rem 1.5rem; }
+      .form-card { max-width: 100%; }
+      .hero p { max-width: 100%; }
+      header { padding: 1rem 1.5rem; }
+      footer  { padding: 1rem 1.5rem; }
+    }
+    @media (max-width: 480px) {
+      .hero h1 { font-size: 1.85rem; }
+      .form-card { padding: 1.75rem 1.4rem; }
+      .header-nav { display: none; }
+    }
   </style>
 </head>
 <body>
-  <div class="glass-card">
-    <span class="badge-pill">☁️ Cloudflare Workers</span>
-    <h1>CF Reverse Proxy</h1>
-    <p class="subtitle">Paste any URL below and browse it through the proxy.</p>
-    <form id="proxyForm" novalidate>
-      <div class="mb-3">
-        <input
-          type="text"
-          id="targetUrl"
-          class="form-control proxy-input"
-          placeholder="https://example.com/page"
-          autocomplete="off"
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-          required
-        >
-        <div class="error-msg" id="errorMsg">Please enter a valid http or https URL.</div>
-      </div>
-      <button type="submit" class="btn-proxy">Open via Proxy</button>
-    </form>
-    <footer>
-      Powered by <a href="https://workers.cloudflare.com/" target="_blank" rel="noopener noreferrer">Cloudflare Workers</a>
-      &nbsp;·&nbsp;
+
+  <header>
+    <div class="header-logo">
+      <span class="emoji">🔗</span>
+      CF Reverse Proxy
+    </div>
+    <nav class="header-nav">
       <a href="https://github.com/OshekharO/CF-REVERSE-PROXY" target="_blank" rel="noopener noreferrer">GitHub</a>
-    </footer>
-  </div>
+      <a href="https://workers.cloudflare.com/" target="_blank" rel="noopener noreferrer">Cloudflare Workers</a>
+    </nav>
+  </header>
+
+  <main class="main">
+
+    <!-- Left: hero / feature copy -->
+    <div class="hero">
+      <div class="hero-badge">&#x2601;&#xFE0F; Powered by Cloudflare Workers</div>
+      <h1>Proxy any URL,<br>instantly.</h1>
+      <p>A fast, free, and serverless reverse proxy running on Cloudflare's global edge network. No sign-up required.</p>
+      <ul class="feature-list">
+        <li>
+          <span class="feat-icon">&#x26A1;</span>
+          <span><strong>Edge-native</strong> &mdash; deployed across 300+ data centers worldwide</span>
+        </li>
+        <li>
+          <span class="feat-icon">&#x1F512;</span>
+          <span><strong>CORS bypass</strong> &mdash; full cross-origin header injection on every response</span>
+        </li>
+        <li>
+          <span class="feat-icon">&#x1F501;</span>
+          <span><strong>Redirect rewriting</strong> &mdash; keeps you inside the proxy chain automatically</span>
+        </li>
+        <li>
+          <span class="feat-icon">&#x1F9E9;</span>
+          <span><strong>Open source</strong> &mdash; auditable, self-hostable, and free forever</span>
+        </li>
+      </ul>
+    </div>
+
+    <!-- Right: proxy form -->
+    <div class="form-card">
+      <h2>Open via Proxy</h2>
+      <p class="form-sub">Paste a URL to browse it through this worker.</p>
+
+      <form id="proxyForm" novalidate>
+        <div>
+          <label class="field-label" for="targetUrl">Target URL</label>
+          <input
+            type="text"
+            id="targetUrl"
+            class="proxy-input"
+            placeholder="https://example.com/page"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+            required
+          >
+          <div class="error-msg" id="errorMsg">Please enter a valid http or https URL.</div>
+        </div>
+        <button type="submit" class="btn-proxy">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          Go
+        </button>
+      </form>
+
+      <div class="divider"></div>
+
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <span>Paste a full URL (http or https) into the field above</span>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <span>Click <em>Go</em> &mdash; the target page loads through this Worker</span>
+        </div>
+        <div class="step">
+          <span class="step-num">3</span>
+          <span>Internal links are rewritten to stay inside the proxy</span>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <footer>
+    Powered by <a href="https://workers.cloudflare.com/" target="_blank" rel="noopener noreferrer">Cloudflare Workers</a>
+    &nbsp;&middot;&nbsp;
+    <a href="https://github.com/OshekharO/CF-REVERSE-PROXY" target="_blank" rel="noopener noreferrer">GitHub</a>
+  </footer>
 
   <script>
     const form   = document.getElementById('proxyForm');
