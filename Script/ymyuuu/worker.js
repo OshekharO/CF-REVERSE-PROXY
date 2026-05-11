@@ -380,7 +380,7 @@ function getLandingPage() {
       }
       errMsg.style.display = 'none';
       const target = /^https?:\/\//i.test(raw) ? raw : 'https://' + raw;
-      window.open(window.location.origin + '/' + encodeURIComponent(target), '_blank', 'noopener,noreferrer');
+      window.location.href = window.location.origin + '/' + encodeURIComponent(target);
     });
 
     input.addEventListener('input', () => { errMsg.style.display = 'none'; });
