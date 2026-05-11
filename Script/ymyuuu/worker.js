@@ -365,7 +365,7 @@ function getLandingPage() {
 
     function isValidUrl(str) {
       try {
-        const u = new URL(/^https?:\/\//i.test(str) ? str : `https://${str}`);
+        const u = new URL(/^https?:\/\//i.test(str) ? str : 'https://' + str);
         return u.protocol === 'http:' || u.protocol === 'https:';
       } catch { return false; }
     }
