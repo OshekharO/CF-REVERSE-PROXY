@@ -604,28 +604,29 @@ function getLandingPage() {
     const form   = document.getElementById('proxyForm');
     const input  = document.getElementById('targetUrl');
     const errMsg = document.getElementById('errorMsg');
+    const PROTO  = new RegExp('^https?://', 'i');
 
     function isValidUrl(str) {
       try {
-        const u = new URL(/^https?:\/\//i.test(str) ? str : 'https://' + str);
+        const u = new URL(PROTO.test(str) ? str : 'https://' + str);
         return u.protocol === 'http:' || u.protocol === 'https:';
-      } catch { return false; }
+      } catch (e) { return false; }
     }
 
-    form.addEventListener('submit', e => {
+    form.addEventListener('submit', function(e) {
       e.preventDefault();
-      const raw = input.value.trim();
+      var raw = input.value.trim();
       if (!raw || !isValidUrl(raw)) {
         errMsg.style.display = 'block';
         input.focus();
         return;
       }
       errMsg.style.display = 'none';
-      const target = /^https?:\/\//i.test(raw) ? raw : 'https://' + raw;
+      var target = PROTO.test(raw) ? raw : 'https://' + raw;
       window.location.href = window.location.origin + '/' + encodeURIComponent(target);
     });
 
-    input.addEventListener('input', () => { errMsg.style.display = 'none'; });
+    input.addEventListener('input', function() { errMsg.style.display = 'none'; });
   </script>
 </body>
 </html>`;
