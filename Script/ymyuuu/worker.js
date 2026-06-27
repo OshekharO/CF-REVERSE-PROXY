@@ -7,17 +7,9 @@
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-/** Protocols allowed to be proxied. Any other protocol is rejected. */
 const ALLOWED_PROTOCOLS = ['http:', 'https:'];
-
-/**
- * Domains that must never be proxied.
- * Matched exactly OR as a hostname suffix
- * (e.g. 'evil.com' also blocks 'sub.evil.com').
- */
 const BLOCKED_DOMAINS = ['example.com', 'another-blocked-site.com'];
 
-/** Cloudflare-injected request headers that must be stripped before forwarding. */
 const CF_HEADERS_TO_STRIP = [
   'cf-connecting-ip',
   'cf-ipcountry',
@@ -55,10 +47,9 @@ async function handleRequest(request) {
   }
 
   // Decode the target URL from the first path segment
-  // e.g.  /https://example.com/path  →  https://example.com/path
   let targetStr = decodeURIComponent(url.pathname.slice(1));
 
-  // Prepend protocol if missing — always default to https
+  // Prepend protocol if missing
   if (!/^https?:\/\//i.test(targetStr)) {
     targetStr = `https://${targetStr}`;
   }
@@ -76,51 +67,98 @@ async function handleRequest(request) {
 
   const targetUrl = validation.parsed;
 
-  // Build upstream request headers (strip Cloudflare-internal headers)
+  // Build upstream request headers
   const upstreamHeaders = new Headers(request.headers);
   CF_HEADERS_TO_STRIP.forEach(h => upstreamHeaders.delete(h));
   upstreamHeaders.set('Host', targetUrl.hostname);
 
   const upstreamRequest = new Request(targetUrl.toString(), {
-    method:   request.method,
-    headers:  upstreamHeaders,
-    body:     request.body,
+    method: request.method,
+    headers: upstreamHeaders,
+    body: request.method === 'GET' || request.method === 'HEAD' ? null : request.body,
     redirect: 'manual',
   });
 
   const upstream = await fetch(upstreamRequest);
 
-  // Redirect handling — rewrite Location to stay within the proxy
+  // Redirect handling
   if ([301, 302, 303, 307, 308].includes(upstream.status)) {
-    return rewriteRedirect(upstream, url);
+    return rewriteRedirect(upstream, url, targetUrl);
   }
 
   // Build response headers
-  const responseHeaders = new Headers(upstream.headers);
+  const responseHeaders = new Headers();
+  
+  // Copy safe headers from upstream
+  const safeHeaders = ['Content-Type', 'Content-Length', 'Content-Language', 'Date', 'ETag', 'Last-Modified'];
+  safeHeaders.forEach(h => {
+    if (upstream.headers.has(h)) {
+      responseHeaders.set(h, upstream.headers.get(h));
+    }
+  });
+  
   applySecurityHeaders(responseHeaders);
   applyCorsHeaders(responseHeaders, request.headers.get('Origin'));
   responseHeaders.set('Cache-Control', 'no-store');
-
-  // Remove headers that would break proxying
   responseHeaders.delete('Content-Security-Policy');
   responseHeaders.delete('Content-Security-Policy-Report-Only');
 
-  // Rewrite HTML body
-  const contentType = responseHeaders.get('Content-Type') || '';
+  const contentType = (responseHeaders.get('Content-Type') || '').toLowerCase();
   let body;
+  let finalHeaders = new Headers(responseHeaders);
+
+  // ─── CRITICAL FIX: Properly handle HTMLRewriter output ───
   if (contentType.includes('text/html')) {
-    const html = await upstream.text();
-    body = rewriteHtml(html, url, targetUrl);
-    responseHeaders.delete('Content-Encoding'); // body is already decoded
-    responseHeaders.set('Content-Type', 'text/html; charset=utf-8');
-  } else {
+    // Create a new response with the upstream body for HTMLRewriter
+    const htmlResponse = new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: upstream.headers
+    });
+
+    const rewriter = new HTMLRewriter()
+      .on('a', new AttributeRewriter('href', targetUrl, url.origin))
+      .on('img', new AttributeRewriter('src', targetUrl, url.origin))
+      .on('img', new AttributeRewriter('srcset', targetUrl, url.origin, true))
+      .on('script', new AttributeRewriter('src', targetUrl, url.origin))
+      .on('link', new AttributeRewriter('href', targetUrl, url.origin))
+      .on('form', new AttributeRewriter('action', targetUrl, url.origin))
+      .on('iframe', new AttributeRewriter('src', targetUrl, url.origin))
+      .on('meta', new MetaRefreshRewriter(targetUrl, url.origin))
+      .on('base', new BaseTagRemover());
+
+    // transform() returns a Response, we need its body
+    const transformedResponse = rewriter.transform(htmlResponse);
+    body = transformedResponse.body;  // ← FIX: Extract body stream, not Response object
+    
+    finalHeaders.set('Content-Type', 'text/html; charset=utf-8');
+    finalHeaders.delete('Content-Length'); // Length changed after rewriting
+  } 
+  // Handle CSS content
+  else if (contentType.includes('text/css')) {
+    const cssText = await upstream.text();
+    const rewrittenCss = rewriteCss(cssText, targetUrl, url.origin);
+    body = rewrittenCss;  // String is OK for Response body
+    finalHeaders.set('Content-Type', 'text/css; charset=utf-8');
+    finalHeaders.delete('Content-Length');
+  } 
+  // Handle JavaScript content
+  else if (contentType.includes('javascript') || contentType.includes('application/json')) {
+    const jsText = await upstream.text();
+    const rewrittenJs = rewriteJs(jsText, targetUrl, url.origin);
+    body = rewrittenJs;
+    finalHeaders.delete('Content-Length');
+  }
+  // Handle other content types (images, etc.)
+  else {
     body = upstream.body;
   }
 
+  // Return properly constructed Response
   return new Response(body, {
-    status:     upstream.status,
+    status: upstream.status,
     statusText: upstream.statusText,
-    headers:    responseHeaders,
+    headers: finalHeaders,
   });
 }
 
@@ -147,44 +185,139 @@ function validateUrl(rawUrl) {
   return { valid: true, parsed };
 }
 
-// ─── Redirect Rewriting ───────────────────────────────────────────────────────
+// ─── Rewriter Classes ─────────────────────────────────────────────────────────
 
-function rewriteRedirect(response, proxyUrl) {
+class AttributeRewriter {
+  constructor(attributeName, targetUrl, proxyOrigin, isSrcset = false) {
+    this.attributeName = attributeName;
+    this.targetUrl = targetUrl;
+    this.proxyOrigin = proxyOrigin;
+    this.isSrcset = isSrcset;
+  }
+
+  element(element) {
+    const attr = element.getAttribute(this.attributeName);
+    if (!attr) return;
+
+    if (this.isSrcset) {
+      element.setAttribute(this.attributeName, rewriteSrcset(attr, this.targetUrl, this.proxyOrigin));
+    } else {
+      element.setAttribute(this.attributeName, rewriteUrl(attr, this.targetUrl, this.proxyOrigin));
+    }
+  }
+}
+
+class MetaRefreshRewriter {
+  constructor(targetUrl, proxyOrigin) {
+    this.targetUrl = targetUrl;
+    this.proxyOrigin = proxyOrigin;
+  }
+
+  element(element) {
+    const httpEquiv = element.getAttribute('http-equiv');
+    if (httpEquiv && httpEquiv.toLowerCase() === 'refresh') {
+      const content = element.getAttribute('content');
+      if (content) {
+        const parts = content.split(';');
+        if (parts.length > 1) {
+          const urlPart = parts[1].trim();
+          if (urlPart.toLowerCase().startsWith('url=')) {
+            const actualUrl = urlPart.substring(4);
+            const rewritten = rewriteUrl(actualUrl, this.targetUrl, this.proxyOrigin);
+            element.setAttribute('content', `${parts[0]}; url=${rewritten}`);
+          }
+        }
+      }
+    }
+  }
+}
+
+class BaseTagRemover {
+  element(element) {
+    element.remove();
+  }
+}
+
+// ─── Rewriting Logic ──────────────────────────────────────────────────────────
+
+function rewriteUrl(originalUrl, targetUrl, proxyOrigin) {
+  if (!originalUrl || 
+      originalUrl.startsWith('#') || 
+      originalUrl.startsWith('data:') || 
+      originalUrl.startsWith('mailto:') || 
+      originalUrl.startsWith('javascript:') ||
+      originalUrl.startsWith('blob:')) {
+    return originalUrl;
+  }
+
+  // If it's already a proxied URL, leave it alone
+  if (originalUrl.startsWith(proxyOrigin)) {
+    return originalUrl;
+  }
+
+  try {
+    // Resolve relative to the absolute target URL
+    const resolvedUrl = new URL(originalUrl, targetUrl);
+    return `${proxyOrigin}/${resolvedUrl.toString()}`;
+  } catch (e) {
+    return originalUrl;
+  }
+}
+
+function rewriteSrcset(srcset, targetUrl, proxyOrigin) {
+  if (!srcset) return srcset;
+  
+  return srcset.split(',').map(part => {
+    let [url, descriptor] = part.trim().split(' ');
+    if (url) {
+      url = rewriteUrl(url, targetUrl, proxyOrigin);
+      return descriptor ? `${url} ${descriptor}` : url;
+    }
+    return part;
+  }).join(', ');
+}
+
+function rewriteCss(cssText, targetUrl, proxyOrigin) {
+  if (!cssText) return cssText;
+  
+  // Rewrite url(...) in CSS
+  return cssText.replace(/url\(['"]?([^'")]+)['"]?\)/g, (match, p1) => {
+    const rewritten = rewriteUrl(p1, targetUrl, proxyOrigin);
+    return `url('${rewritten}')`;
+  });
+}
+
+function rewriteJs(jsText, targetUrl, proxyOrigin) {
+  if (!jsText) return jsText;
+  
+  // Rewrite common URL patterns in JavaScript
+  return jsText.replace(/["'](https?:\/\/[^"']+)["']/g, (match, url) => {
+    const rewritten = rewriteUrl(url, targetUrl, proxyOrigin);
+    return `"${rewritten}"`;
+  });
+}
+
+// ─── Redirect Handling ───────────────────────────────────────────────────────
+
+function rewriteRedirect(response, proxyUrl, targetUrl) {
   const location = response.headers.get('Location');
-  const headers = new Headers(response.headers);
+  const headers = new Headers();
   applyCorsHeaders(headers, null);
 
   if (location) {
-    let resolvedLocation = location;
-    try { resolvedLocation = new URL(location).toString(); } catch { /* keep as-is */ }
-    headers.set('Location', `${proxyUrl.origin}/${encodeURIComponent(resolvedLocation)}`);
+    try {
+      // Resolve relative redirects against the target URL
+      const resolvedLocation = new URL(location, targetUrl).toString();
+      headers.set('Location', `${proxyUrl.origin}/${resolvedLocation}`);
+    } catch (e) {
+      headers.set('Location', location);
+    }
   }
 
   return new Response(null, { status: response.status, headers });
 }
 
-// ─── HTML Body Rewriting ──────────────────────────────────────────────────────
-
-function rewriteHtml(html, proxyUrl, targetUrl) {
-  const targetOrigin  = targetUrl.origin;
-  const proxyOrigin   = proxyUrl.origin;
-
-  // 1. Rewrite absolute URLs pointing to the proxied origin
-  let result = html.replace(
-    new RegExp(`(https?:)?//${escapeRegExp(targetUrl.hostname)}`, 'gi'),
-    `${proxyOrigin}/${targetOrigin}`
-  );
-
-  // 2. Rewrite root-relative paths  ( /path → proxyOrigin/targetOrigin/path )
-  result = result.replace(
-    /((href|src|action|data-src)=["'])\//gi,
-    `$1${proxyOrigin}/${targetOrigin}/`
-  );
-
-  return result;
-}
-
-// ─── Header Helpers ───────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function applySecurityHeaders(headers) {
   headers.set('X-Content-Type-Options', 'nosniff');
@@ -205,19 +338,11 @@ function handlePreflight(request) {
   return new Response(null, { status: 204, headers });
 }
 
-// ─── Error Response ───────────────────────────────────────────────────────────
-
 function jsonError(status, title, detail) {
   return new Response(JSON.stringify({ error: title, detail }), {
     status,
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
   });
-}
-
-// ─── Utility ──────────────────────────────────────────────────────────────────
-
-function escapeRegExp(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ─── Landing Page ─────────────────────────────────────────────────────────────
@@ -229,29 +354,19 @@ function getLandingPage() {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Proxy any URL through Cloudflare Workers — fast, free, and serverless.">
-  <meta name="robots" content="index, follow">
   <title>CF Reverse Proxy</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔗</text></svg>">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
       min-height: 100vh;
       background: linear-gradient(135deg, #0f0c29 0%, #302b63 55%, #24243e 100%);
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
       color: #fff;
-      display: flex;
-      flex-direction: column;
-      overflow-x: hidden;
+      display: flex; flex-direction: column; overflow-x: hidden;
     }
-
-    /* Decorative glow orbs */
     body::before, body::after {
-      content: '';
-      position: fixed;
-      border-radius: 50%;
-      pointer-events: none;
-      z-index: 0;
+      content: ''; position: fixed; border-radius: 50%; pointer-events: none; z-index: 0;
     }
     body::before {
       width: 700px; height: 700px;
@@ -263,309 +378,111 @@ function getLandingPage() {
       background: radial-gradient(circle, rgba(62,207,207,0.18) 0%, transparent 65%);
       bottom: -150px; right: -150px;
     }
-
-    /* ── Header ─────────────────────────────── */
     header {
-      position: relative;
-      z-index: 1;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 1.25rem 3rem;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between;
+      padding: 1.25rem 3rem; border-bottom: 1px solid rgba(255,255,255,0.06);
     }
-    .header-logo {
-      display: flex;
-      align-items: center;
-      gap: 0.55rem;
-      font-size: 1rem;
-      font-weight: 700;
-      color: rgba(255,255,255,0.9);
-      letter-spacing: -0.2px;
-    }
+    .header-logo { display: flex; align-items: center; gap: 0.55rem; font-size: 1rem; font-weight: 700; color: rgba(255,255,255,0.9); }
     .header-logo .emoji { font-size: 1.3rem; }
-    .header-nav {
-      display: flex;
-      gap: 1.5rem;
-      align-items: center;
-    }
-    .header-nav a {
-      font-size: 0.82rem;
-      color: rgba(255,255,255,0.45);
-      text-decoration: none;
-      transition: color 0.2s;
-    }
+    .header-nav { display: flex; gap: 1.5rem; align-items: center; }
+    .header-nav a { font-size: 0.82rem; color: rgba(255,255,255,0.45); text-decoration: none; transition: color 0.2s; }
     .header-nav a:hover { color: #fff; }
-
-    /* ── Main two-column layout ─────────────── */
     .main {
-      position: relative;
-      z-index: 1;
-      flex: 1;
-      display: flex;
-      align-items: center;
-      gap: 5rem;
-      padding: 4rem 3rem;
-      max-width: 1200px;
-      margin: 0 auto;
-      width: 100%;
+      position: relative; z-index: 1; flex: 1; display: flex; align-items: center; gap: 5rem;
+      padding: 4rem 3rem; max-width: 1200px; margin: 0 auto; width: 100%;
     }
-
-    /* ── Hero (left) ────────────────────────── */
-    .hero {
-      flex: 1;
-      min-width: 0;
-    }
+    .hero { flex: 1; min-width: 0; }
     .hero-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      background: rgba(108,99,255,0.18);
-      border: 1px solid rgba(108,99,255,0.38);
-      border-radius: 999px;
-      padding: 0.28rem 0.9rem;
-      font-size: 0.74rem;
-      color: #b0aaff;
-      margin-bottom: 1.5rem;
-      letter-spacing: 0.3px;
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      background: rgba(108,99,255,0.18); border: 1px solid rgba(108,99,255,0.38);
+      border-radius: 999px; padding: 0.28rem 0.9rem; font-size: 0.74rem; color: #b0aaff; margin-bottom: 1.5rem;
     }
     .hero h1 {
-      font-size: clamp(2rem, 3.5vw, 3rem);
-      font-weight: 800;
-      line-height: 1.18;
-      letter-spacing: -1px;
-      margin-bottom: 1.1rem;
-      background: linear-gradient(130deg, #ffffff 35%, #b0aaff 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      font-size: clamp(2rem, 3.5vw, 3rem); font-weight: 800; line-height: 1.18; letter-spacing: -1px;
+      margin-bottom: 1.1rem; background: linear-gradient(130deg, #ffffff 35%, #b0aaff 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
     }
-    .hero p {
-      color: rgba(255,255,255,0.5);
-      font-size: 1rem;
-      line-height: 1.75;
-      margin-bottom: 2.5rem;
-      max-width: 400px;
-    }
-    .feature-list {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-    }
-    .feature-list li {
-      display: flex;
-      align-items: center;
-      gap: 0.85rem;
-      font-size: 0.88rem;
-      color: rgba(255,255,255,0.65);
-    }
+    .hero p { color: rgba(255,255,255,0.5); font-size: 1rem; line-height: 1.75; margin-bottom: 2.5rem; max-width: 400px; }
+    .feature-list { list-style: none; display: flex; flex-direction: column; gap: 1rem; }
+    .feature-list li { display: flex; align-items: center; gap: 0.85rem; font-size: 0.88rem; color: rgba(255,255,255,0.65); }
     .feature-list li strong { color: rgba(255,255,255,0.88); }
     .feat-icon {
-      width: 34px; height: 34px;
-      flex-shrink: 0;
-      border-radius: 9px;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.1);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 1rem;
+      width: 34px; height: 34px; flex-shrink: 0; border-radius: 9px;
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+      display: flex; align-items: center; justify-content: center; font-size: 1rem;
     }
-
-    /* ── Form card (right) ──────────────────── */
     .form-card {
-      flex-shrink: 0;
-      width: 100%;
-      max-width: 420px;
-      background: rgba(255,255,255,0.07);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      border: 1px solid rgba(255,255,255,0.14);
-      border-radius: 1.5rem;
-      padding: 2.4rem 2.2rem;
+      flex-shrink: 0; width: 100%; max-width: 420px; background: rgba(255,255,255,0.07);
+      backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 1.5rem; padding: 2.4rem 2.2rem;
       box-shadow: 0 12px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.07);
     }
-    .form-card h2 {
-      font-size: 1.2rem;
-      font-weight: 700;
-      margin-bottom: 0.35rem;
-    }
-    .form-sub {
-      font-size: 0.82rem;
-      color: rgba(255,255,255,0.42);
-      margin-bottom: 1.8rem;
-    }
-    .field-label {
-      display: block;
-      font-size: 0.74rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: rgba(255,255,255,0.5);
-      margin-bottom: 0.45rem;
-    }
+    .form-card h2 { font-size: 1.2rem; font-weight: 700; margin-bottom: 0.35rem; }
+    .form-sub { font-size: 0.82rem; color: rgba(255,255,255,0.42); margin-bottom: 1.8rem; }
+    .field-label { display: block; font-size: 0.74rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255,255,255,0.5); margin-bottom: 0.45rem; }
     .proxy-input {
-      width: 100%;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.14);
-      border-radius: 0.75rem;
-      color: #fff;
-      padding: 0.78rem 1rem;
-      font-size: 0.92rem;
-      font-family: inherit;
-      outline: none;
+      width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 0.75rem; color: #fff; padding: 0.78rem 1rem; font-size: 0.92rem; font-family: inherit; outline: none;
       transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
     }
     .proxy-input::placeholder { color: rgba(255,255,255,0.25); }
-    .proxy-input:focus {
-      background: rgba(255,255,255,0.1);
-      border-color: rgba(108,99,255,0.65);
-      box-shadow: 0 0 0 3px rgba(108,99,255,0.18);
-    }
-    .error-msg {
-      color: #ff8a8a;
-      font-size: 0.78rem;
-      margin-top: 0.42rem;
-      display: none;
-    }
+    .proxy-input:focus { background: rgba(255,255,255,0.1); border-color: rgba(108,99,255,0.65); box-shadow: 0 0 0 3px rgba(108,99,255,0.18); }
+    .error-msg { color: #ff8a8a; font-size: 0.78rem; margin-top: 0.42rem; display: none; }
     .btn-proxy {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
-      width: 100%;
-      margin-top: 1rem;
-      padding: 0.82rem 1.5rem;
-      background: linear-gradient(90deg, #6c63ff, #3ecfcf);
-      border: none;
-      border-radius: 0.75rem;
-      color: #fff;
-      font-weight: 700;
-      font-size: 0.95rem;
-      cursor: pointer;
-      font-family: inherit;
-      transition: opacity 0.2s, transform 0.12s, box-shadow 0.2s;
-      box-shadow: 0 4px 22px rgba(108,99,255,0.38);
+      display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%; margin-top: 1rem;
+      padding: 0.82rem 1.5rem; background: linear-gradient(90deg, #6c63ff, #3ecfcf); border: none; border-radius: 0.75rem;
+      color: #fff; font-weight: 700; font-size: 0.95rem; cursor: pointer; font-family: inherit;
+      transition: opacity 0.2s, transform 0.12s, box-shadow 0.2s; box-shadow: 0 4px 22px rgba(108,99,255,0.38);
     }
     .btn-proxy:hover  { opacity: 0.88; box-shadow: 0 6px 30px rgba(108,99,255,0.55); }
     .btn-proxy:active { transform: scale(0.98); }
-
-    .divider {
-      height: 1px;
-      background: rgba(255,255,255,0.08);
-      margin: 1.6rem 0;
-    }
-    .steps {
-      display: flex;
-      flex-direction: column;
-      gap: 0.75rem;
-    }
-    .step {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.7rem;
-      font-size: 0.79rem;
-      color: rgba(255,255,255,0.4);
-      line-height: 1.5;
-    }
+    .divider { height: 1px; background: rgba(255,255,255,0.08); margin: 1.6rem 0; }
+    .steps { display: flex; flex-direction: column; gap: 0.75rem; }
+    .step { display: flex; align-items: flex-start; gap: 0.7rem; font-size: 0.79rem; color: rgba(255,255,255,0.4); line-height: 1.5; }
     .step-num {
-      flex-shrink: 0;
-      width: 20px; height: 20px;
-      border-radius: 50%;
-      background: rgba(108,99,255,0.22);
-      font-size: 0.68rem;
-      font-weight: 700;
-      color: #b0aaff;
-      display: flex; align-items: center; justify-content: center;
-      margin-top: 1px;
+      flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; background: rgba(108,99,255,0.22);
+      font-size: 0.68rem; font-weight: 700; color: #b0aaff; display: flex; align-items: center; justify-content: center; margin-top: 1px;
     }
-
-    /* ── Footer ─────────────────────────────── */
-    footer {
-      position: relative;
-      z-index: 1;
-      text-align: center;
-      padding: 1.25rem 3rem;
-      font-size: 0.72rem;
-      color: rgba(255,255,255,0.22);
-      border-top: 1px solid rgba(255,255,255,0.05);
-    }
+    footer { position: relative; z-index: 1; text-align: center; padding: 1.25rem 3rem; font-size: 0.72rem; color: rgba(255,255,255,0.22); border-top: 1px solid rgba(255,255,255,0.05); }
     footer a { color: rgba(255,255,255,0.32); text-decoration: none; transition: color 0.2s; }
     footer a:hover { color: #fff; }
-
-    /* ── Responsive ─────────────────────────── */
     @media (max-width: 860px) {
       .main { flex-direction: column; align-items: stretch; gap: 2.5rem; padding: 2.5rem 1.5rem; }
-      .form-card { max-width: 100%; }
-      .hero p { max-width: 100%; }
-      header { padding: 1rem 1.5rem; }
-      footer  { padding: 1rem 1.5rem; }
+      .form-card { max-width: 100%; } .hero p { max-width: 100%; }
+      header { padding: 1rem 1.5rem; } footer  { padding: 1rem 1.5rem; }
     }
     @media (max-width: 480px) {
-      .hero h1 { font-size: 1.85rem; }
-      .form-card { padding: 1.75rem 1.4rem; }
-      .header-nav { display: none; }
+      .hero h1 { font-size: 1.85rem; } .form-card { padding: 1.75rem 1.4rem; } .header-nav { display: none; }
     }
   </style>
 </head>
 <body>
-
   <header>
-    <div class="header-logo">
-      <span class="emoji">🔗</span>
-      CF Reverse Proxy
-    </div>
+    <div class="header-logo"><span class="emoji">🔗</span> CF Reverse Proxy</div>
     <nav class="header-nav">
       <a href="https://github.com/OshekharO/CF-REVERSE-PROXY" target="_blank" rel="noopener noreferrer">GitHub</a>
       <a href="https://workers.cloudflare.com/" target="_blank" rel="noopener noreferrer">Cloudflare Workers</a>
     </nav>
   </header>
-
   <main class="main">
-
-    <!-- Left: hero / feature copy -->
     <div class="hero">
-      <div class="hero-badge">&#x2601;&#xFE0F; Powered by Cloudflare Workers</div>
+      <div class="hero-badge">☁️ Powered by Cloudflare Workers</div>
       <h1>Proxy any URL,<br>instantly.</h1>
       <p>A fast, free, and serverless reverse proxy running on Cloudflare's global edge network. No sign-up required.</p>
       <ul class="feature-list">
-        <li>
-          <span class="feat-icon">&#x26A1;</span>
-          <span><strong>Edge-native</strong> &mdash; deployed across 300+ data centers worldwide</span>
-        </li>
-        <li>
-          <span class="feat-icon">&#x1F512;</span>
-          <span><strong>CORS bypass</strong> &mdash; full cross-origin header injection on every response</span>
-        </li>
-        <li>
-          <span class="feat-icon">&#x1F501;</span>
-          <span><strong>Redirect rewriting</strong> &mdash; keeps you inside the proxy chain automatically</span>
-        </li>
-        <li>
-          <span class="feat-icon">&#x1F9E9;</span>
-          <span><strong>Open source</strong> &mdash; auditable, self-hostable, and free forever</span>
-        </li>
+        <li><span class="feat-icon">⚡</span><span><strong>Edge-native</strong> — deployed across 300+ data centers worldwide</span></li>
+        <li><span class="feat-icon">🔒</span><span><strong>CORS bypass</strong> — full cross-origin header injection on every response</span></li>
+        <li><span class="feat-icon">🔁</span><span><strong>Redirect rewriting</strong> — keeps you inside the proxy chain automatically</span></li>
+        <li><span class="feat-icon">🧩</span><span><strong>Open source</strong> — auditable, self-hostable, and free forever</span></li>
       </ul>
     </div>
-
-    <!-- Right: proxy form -->
     <div class="form-card">
       <h2>Open via Proxy</h2>
       <p class="form-sub">Paste a URL to browse it through this worker.</p>
-
       <form id="proxyForm" novalidate>
         <div>
           <label class="field-label" for="targetUrl">Target URL</label>
-          <input
-            type="text"
-            id="targetUrl"
-            class="proxy-input"
-            placeholder="https://example.com/page"
-            autocomplete="off"
-            autocorrect="off"
-            autocapitalize="off"
-            spellcheck="false"
-            required
-          >
+          <input type="text" id="targetUrl" class="proxy-input" placeholder="https://example.com/page" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" required>
           <div class="error-msg" id="errorMsg">Please enter a valid http or https URL.</div>
         </div>
         <button type="submit" class="btn-proxy">
@@ -573,59 +490,39 @@ function getLandingPage() {
           Go
         </button>
       </form>
-
       <div class="divider"></div>
-
       <div class="steps">
-        <div class="step">
-          <span class="step-num">1</span>
-          <span>Paste a full URL (http or https) into the field above</span>
-        </div>
-        <div class="step">
-          <span class="step-num">2</span>
-          <span>Click <em>Go</em> &mdash; the target page loads through this Worker</span>
-        </div>
-        <div class="step">
-          <span class="step-num">3</span>
-          <span>Internal links are rewritten to stay inside the proxy</span>
-        </div>
+        <div class="step"><span class="step-num">1</span><span>Paste a full URL (http or https) into the field above</span></div>
+        <div class="step"><span class="step-num">2</span><span>Click <em>Go</em> — the target page loads through this Worker</span></div>
+        <div class="step"><span class="step-num">3</span><span>Internal links are rewritten to stay inside the proxy</span></div>
       </div>
     </div>
-
   </main>
-
   <footer>
-    Powered by <a href="https://workers.cloudflare.com/" target="_blank" rel="noopener noreferrer">Cloudflare Workers</a>
-    &nbsp;&middot;&nbsp;
+    Powered by <a href="https://workers.cloudflare.com/" target="_blank" rel="noopener noreferrer">Cloudflare Workers</a> &nbsp;·&nbsp;
     <a href="https://github.com/OshekharO/CF-REVERSE-PROXY" target="_blank" rel="noopener noreferrer">GitHub</a>
   </footer>
-
   <script>
-    const form   = document.getElementById('proxyForm');
-    const input  = document.getElementById('targetUrl');
+    const form = document.getElementById('proxyForm');
+    const input = document.getElementById('targetUrl');
     const errMsg = document.getElementById('errorMsg');
-    const PROTO  = new RegExp('^https?://', 'i');
-
+    const PROTO = new RegExp('^https?://', 'i');
     function isValidUrl(str) {
       try {
         const u = new URL(PROTO.test(str) ? str : 'https://' + str);
         return u.protocol === 'http:' || u.protocol === 'https:';
       } catch (e) { return false; }
     }
-
     form.addEventListener('submit', function(e) {
       e.preventDefault();
       var raw = input.value.trim();
       if (!raw || !isValidUrl(raw)) {
-        errMsg.style.display = 'block';
-        input.focus();
-        return;
+        errMsg.style.display = 'block'; input.focus(); return;
       }
       errMsg.style.display = 'none';
       var target = PROTO.test(raw) ? raw : 'https://' + raw;
       window.location.href = window.location.origin + '/' + encodeURIComponent(target);
     });
-
     input.addEventListener('input', function() { errMsg.style.display = 'none'; });
   </script>
 </body>
