@@ -1,148 +1,258 @@
-const USERNAME = 'thewantedcracker'; // Telegram username
-const BASE_URL = 'https://proxy.oshekher.workers.dev'; // Ensure the base URL is properly formatted
-const ICON = '<link rel="icon" type="image/webp" href="https://cdn.lwqwq.com/pic/41329_SaVJ3LWa.webp"/>' +
-             '<base target="_blank" />' + 
-             `<style>
-                div.tgme_header_search {
-                  display: none;
-                }
-                div.tgme_header_info {
-                  margin-right: 0 !important;
-                }
-                div.tgme_footer {
-                  display: none;
-                }
-              </style>`;
+/* CF-REVERSE-PROXY — Clansty/proxy.js
+ * Reverse-proxy a Telegram public channel preview so it can be embedded
+ * in any website via an <iframe>.
+ *
+ * Repository : https://github.com/OshekharO/CF-REVERSE-PROXY
+ * Original author : Clansty  |  Enhanced by : OshekharO
+ */
+
+// ─── Configuration ────────────────────────────────────────────────────────────
+
+/**
+ * Telegram channel username (without the @ symbol).
+ * Example: 'durov'
+ */
+const USERNAME = 'thewantedcracker';
+
+/**
+ * Full base URL of this Worker (your .workers.dev URL or custom domain).
+ * Leave empty ('') to auto-detect from the incoming request — recommended.
+ * Example: 'https://your-worker.workers.dev'
+ */
+const BASE_URL = '';
+
+/** Favicon URL injected into proxied Telegram pages. */
+const FAVICON_URL = 'https://cdn.lwqwq.com/pic/41329_SaVJ3LWa.webp';
+
+// ─── Derived Constants ────────────────────────────────────────────────────────
+
 const CHANNEL_URL = `https://t.me/s/${USERNAME}`;
 
-addEventListener('fetch', event => {
-    event.respondWith(handleRequest(event.request).catch(error => {
-        console.error('Error in handleRequest:', error);
-        return new Response('Internal Server Error', { status: 500 });
-    }));
-});
+/** Cloudflare-injected headers to strip before forwarding requests. */
+const CF_HEADERS_TO_STRIP = [
+  'cf-connecting-ip',
+  'cf-ipcountry',
+  'cf-ray',
+  'cf-visitor',
+  'cf-worker',
+];
 
-async function replaceText(resp) {
-    let ct = resp.headers.get('content-type');
-    if (!ct) return resp;
-    ct = ct.toLowerCase();
-    if (!(ct.includes('text/html') || ct.includes('application/json'))) return resp;
+/** Response headers that block <iframe> embedding — must be removed. */
+const EMBED_BLOCKING_HEADERS = [
+  'x-frame-options',
+  'content-security-policy',
+  'content-security-policy-report-only',
+];
 
-    let text = await resp.text();
-    text = text.replace(/<a class="tgme_channel_join_telegram" href="\/\/telegram\.org\/dl[\?a-z0-9_=]*">/g, 
-        `<a class="tgme_channel_join_telegram" href="https://t.me/${USERNAME}">`)
-        .replace(/<a class="tgme_channel_download_telegram" href="\/\/telegram\.org\/dl[\?a-z0-9_=]*">/g, 
-        `<a class="tgme_channel_download_telegram" href="https://t.me/${USERNAME}">`)
-        .replace(/<link rel="shortcut icon" href="\/\/telegram\.org\/favicon\.ico\?\d+" type="image\/x-icon" \/>/g, ICON)
-        .replace(/https?:\/\/telegram\.org\//g, `${BASE_URL}/tgorg/`)
-        .replace(/https?:\/\/cdn(\d)\.telesco\.pe\//g, `${BASE_URL}/ts/$1/`)
-        .replace(/https?:\/\/t\.me\/[A-z0-9\_]{5,}\//g, `${BASE_URL}/`)
-        .replace(/<div class="tgme_channel_download_telegram_bottom">to view and join the conversation<\/div>/g, "")
-        .replace(/Download Telegram/g, "Join Channel");
+// ─── Entry Point ──────────────────────────────────────────────────────────────
 
-    return new Response(text, {
-        headers: { "content-type": ct }
-    });
-}
+export default {
+  async fetch(request) {
+    if (request.method === 'OPTIONS') {
+      return handlePreflight(request);
+    }
+    try {
+      return await handleRequest(request);
+    } catch (err) {
+      console.error('Unhandled error:', err);
+      return new Response('Internal Server Error', { status: 500 });
+    }
+  },
+};
 
-async function replaceTextForTgOrg(resp) {
-    let ct = resp.headers.get('content-type');
-    if (!ct) return resp;
-    ct = ct.toLowerCase();
-    if (!ct.includes('text/css')) return resp;
-
-    let text = await resp.text();
-    text = text.replace(/url\(\//g, `url(${BASE_URL}/tgorg/`)
-                .replace(/url\('\//g, `url('${BASE_URL}/tgorg/`);
-
-    return new Response(text, {
-        headers: { "content-type": ct }
-    });
-}
+// ─── Main Request Router ──────────────────────────────────────────────────────
 
 async function handleRequest(request) {
-    const u = new URL(request.url);
-    const reg = /\/[0-9]*$/;
+  const u = new URL(request.url);
+  // Resolve base URL from the incoming request when not explicitly configured.
+  const base = BASE_URL || u.origin;
 
-    // Statistics node
-    if (u.pathname === '/v/') {
-        return new Response('true', {
-            headers: { "content-type": "application/json" }
-        });
-    }
+  const pathname = u.pathname;
+  const pathParts = pathname.split('/').filter(Boolean); // ['seg1', 'seg2', ...]
+  const host = pathParts[0] || '';
+  const hostParam = pathParts[1] || '';
 
-    // Home
-    if (u.pathname === '/') {
-        const req = new Request(CHANNEL_URL, {
-            method: 'GET',
-        });
-        const result = await fetch(req).catch(error => {
-            console.error('Error fetching home page:', error);
-            return new Response('Internal Server Error', { status: 500 });
-        });
-        return replaceText(result);
-    }
+  // ── Statistics / health-check endpoint ─────────────────────────────────────
+  if (pathname === '/v/') {
+    return jsonOk('true');
+  }
 
-    // Message location
-    if (reg.test(u.pathname)) {
-        const req = new Request(CHANNEL_URL + u.pathname, {
-            method: 'GET',
-        });
-        const result = await fetch(req).catch(error => {
-            console.error('Error fetching message:', error);
-            return new Response('Internal Server Error', { status: 500 });
-        });
-        return replaceText(result);
-    }
+  // ── Channel home ───────────────────────────────────────────────────────────
+  if (pathname === '/') {
+    const upstream = await fetchUpstream(CHANNEL_URL, { method: 'GET' });
+    return transformChannelPage(upstream, base);
+  }
 
-    const pathParts = u.pathname.split('/').slice(1);
-    const host = pathParts[0] || '';
-    const hostParam = pathParts[1] || '';
+  // ── Specific message (e.g. /42) ────────────────────────────────────────────
+  if (/^\/\d+$/.test(pathname)) {
+    const upstream = await fetchUpstream(`${CHANNEL_URL}${pathname}`, { method: 'GET' });
+    return transformChannelPage(upstream, base);
+  }
 
-    // Node of telegram.org
-    if (host === 'tgorg') {
-        const req = new Request(`https://telegram.org/${pathParts.slice(1).join('/')}`, {
-            method: 'GET',
-        });
-        const result = await fetch(req).catch(error => {
-            console.error('Error fetching telegram.org:', error);
-            return new Response('Internal Server Error', { status: 500 });
-        });
-        return replaceTextForTgOrg(result);
-    }
+  // ── telegram.org assets (CSS, icons, …) ────────────────────────────────────
+  if (host === 'tgorg') {
+    const targetPath = pathParts.slice(1).join('/');
+    const upstream = await fetchUpstream(`https://telegram.org/${targetPath}`, { method: 'GET' });
+    return transformTgOrgAsset(upstream, base);
+  }
 
-    // Telescope node
-    if (host === 'ts') {
-        const req = new Request(`https://cdn${hostParam}.telesco.pe/${pathParts.slice(2).join('/')}`, {
-            method: 'GET',
-        });
-        const result = await fetch(req).catch(error => {
-            console.error('Error fetching telescope:', error);
-            return new Response('Internal Server Error', { status: 500 });
-        });
-        return result;
-    }
+  // ── Telescope CDN images & videos ──────────────────────────────────────────
+  if (host === 'ts') {
+    const cdnIndex = hostParam; // e.g. '1', '2', '3', '4', '5'
+    const assetPath = pathParts.slice(2).join('/');
+    return fetchUpstream(`https://cdn${cdnIndex}.telesco.pe/${assetPath}`, { method: 'GET' });
+  }
 
-    // Load more
-    if (host === 's' && hostParam === USERNAME) {
-        u.host = 't.me';
-        const req = new Request(u, {
-            method: 'POST',
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        });
-        const result = await fetch(req).catch(error => {
-            console.error('Error fetching load more:', error);
-            return new Response('Internal Server Error', { status: 500 });
-        });
-        return replaceText(result);
-    }
-
-    return await fetch(new Request('https://proxy.oshekher.workers.dev', {
-        method: request.method,
-        headers: request.headers,
-        body: request.body
-    })).catch(error => {
-        console.error('Error fetching default:', error);
-        return new Response('Internal Server Error', { status: 500 });
+  // ── "Load more" AJAX requests from the channel page ────────────────────────
+  if (host === 's' && hostParam === USERNAME) {
+    const ajaxUrl = new URL(u.toString());
+    ajaxUrl.hostname = 't.me';
+    const upstream = await fetchUpstream(ajaxUrl.toString(), {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
     });
+    return transformChannelPage(upstream, base);
+  }
+
+  // ── Fallback: 404 ──────────────────────────────────────────────────────────
+  return new Response('Not Found', { status: 404 });
+}
+
+// ─── Content Transformers ─────────────────────────────────────────────────────
+
+/**
+ * Rewrites Telegram channel HTML/JSON so all internal URLs route through this
+ * Worker, and injects custom CSS to hide Telegram's navigation chrome.
+ */
+async function transformChannelPage(response, base) {
+  const ct = (response.headers.get('content-type') || '').toLowerCase();
+  if (!(ct.includes('text/html') || ct.includes('application/json'))) {
+    return buildProxyResponse(response);
+  }
+
+  const customHead =
+    `<link rel="icon" type="image/webp" href="${FAVICON_URL}"/>` +
+    `<base target="_blank"/>` +
+    `<style>
+      div.tgme_header_search { display: none; }
+      div.tgme_header_info   { margin-right: 0 !important; }
+      div.tgme_footer        { display: none; }
+    </style>`;
+
+  let text = await response.text();
+
+  text = text
+    // Replace "Download Telegram" call-to-action links with a direct channel link
+    .replace(
+      /<a class="tgme_channel_join_telegram" href="\/\/telegram\.org\/dl[\?a-z0-9_=]*">/g,
+      `<a class="tgme_channel_join_telegram" href="https://t.me/${USERNAME}">`,
+    )
+    .replace(
+      /<a class="tgme_channel_download_telegram" href="\/\/telegram\.org\/dl[\?a-z0-9_=]*">/g,
+      `<a class="tgme_channel_download_telegram" href="https://t.me/${USERNAME}">`,
+    )
+    // Inject custom head elements (replace the favicon shortcut)
+    .replace(
+      /<link rel="shortcut icon" href="\/\/telegram\.org\/favicon\.ico\?\d+" type="image\/x-icon" \/>/g,
+      customHead,
+    )
+    // Route external assets through the Worker
+    .replace(/https?:\/\/telegram\.org\//g, `${base}/tgorg/`)
+    .replace(/https?:\/\/cdn(\d)\.telesco\.pe\//g, `${base}/ts/$1/`)
+    // Strip channel-specific path prefixes so navigation stays on this Worker
+    .replace(new RegExp(`https?://t\\.me/[A-Za-z0-9_]{5,}/`, 'g'), `${base}/`)
+    // Remove "download Telegram" banner text
+    .replace(
+      /<div class="tgme_channel_download_telegram_bottom">to view and join the conversation<\/div>/g,
+      '',
+    )
+    .replace(/Download Telegram/g, 'Join Channel');
+
+  const headers = buildResponseHeaders(response, ct);
+  return new Response(text, { status: response.status, headers });
+}
+
+/**
+ * Rewrites root-relative asset paths inside telegram.org CSS files so they
+ * resolve through the Worker's `/tgorg/` route.
+ */
+async function transformTgOrgAsset(response, base) {
+  const ct = (response.headers.get('content-type') || '').toLowerCase();
+  if (!ct.includes('text/css')) {
+    return buildProxyResponse(response);
+  }
+
+  let text = await response.text();
+  text = text
+    .replace(/url\(\//g, `url(${base}/tgorg/`)
+    .replace(/url\('\//g, `url('${base}/tgorg/`);
+
+  const headers = buildResponseHeaders(response, ct);
+  return new Response(text, { status: response.status, headers });
+}
+
+// ─── Response Builders ────────────────────────────────────────────────────────
+
+/**
+ * Wraps an upstream response, stripping headers that block <iframe> embedding
+ * and applying CORS headers.
+ */
+function buildProxyResponse(response) {
+  const headers = buildResponseHeaders(response, response.headers.get('content-type'));
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+/**
+ * Builds clean response headers from an upstream response:
+ *  - Copies all upstream headers
+ *  - Removes embedding-blocking headers
+ *  - Sets the correct Content-Type
+ *  - Adds CORS headers
+ */
+function buildResponseHeaders(response, contentType) {
+  const headers = new Headers(response.headers);
+
+  // Remove headers that prevent <iframe> embedding
+  EMBED_BLOCKING_HEADERS.forEach(h => headers.delete(h));
+
+  if (contentType) {
+    headers.set('content-type', contentType);
+  }
+
+  headers.set('Access-Control-Allow-Origin', '*');
+  headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  headers.set('Access-Control-Allow-Headers', '*');
+  return headers;
+}
+
+// ─── Fetch Helper ─────────────────────────────────────────────────────────────
+
+/**
+ * Fetches an upstream URL, stripping Cloudflare-injected headers from the
+ * forwarded request.
+ */
+async function fetchUpstream(url, init = {}) {
+  const headers = new Headers(init.headers || {});
+  CF_HEADERS_TO_STRIP.forEach(h => headers.delete(h));
+  return fetch(new Request(url, { ...init, headers }));
+}
+
+// ─── Utility ──────────────────────────────────────────────────────────────────
+
+function handlePreflight(request) {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': request.headers.get('Origin') || '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Max-Age': '86400',
+    },
+  });
+}
+
+function jsonOk(data) {
+  return new Response(data, {
+    headers: { 'content-type': 'application/json; charset=utf-8' },
+  });
 }
