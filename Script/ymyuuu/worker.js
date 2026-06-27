@@ -60,7 +60,7 @@ async function handleRequest(request) {
   }
 
   // Validate the target URL
-  const validation = validateUrl(targetStr);
+  const validation = validateUrl(targetStr, url.hostname);
   if (!validation.valid) {
     return jsonError(400, 'Bad Request', `URL validation failed: ${validation.reason}`);
   }
@@ -80,6 +80,22 @@ async function handleRequest(request) {
   });
 
   const upstream = await fetch(upstreamRequest);
+
+  // ─── NEW: Intercept upstream Cloudflare error pages ───
+  if (upstream.status >= 500) {
+    const ct = upstream.headers.get('Content-Type') || '';
+    if (ct.includes('text/html')) {
+      // Clone the response to read the text without locking the stream
+      const errorText = await upstream.clone().text();
+      // Check for common Cloudflare origin errors (1000, 1003, 1016, etc.)
+      if (errorText.includes('Error 1003') || 
+          errorText.includes('Error 1016') || 
+          errorText.includes('Error 1000') || 
+          errorText.includes('Ray ID:')) {
+        return jsonError(502, 'Bad Gateway', 'The target website is unavailable, misconfigured, or blocking proxies.');
+      }
+    }
+  }
 
   // Redirect handling
   if ([301, 302, 303, 307, 308].includes(upstream.status)) {
@@ -107,9 +123,8 @@ async function handleRequest(request) {
   let body;
   let finalHeaders = new Headers(responseHeaders);
 
-  // ─── CRITICAL FIX: Properly handle HTMLRewriter output ───
+  // ─── HTML Content: Use HTMLRewriter ───
   if (contentType.includes('text/html')) {
-    // Create a new response with the upstream body for HTMLRewriter
     const htmlResponse = new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
@@ -127,34 +142,32 @@ async function handleRequest(request) {
       .on('meta', new MetaRefreshRewriter(targetUrl, url.origin))
       .on('base', new BaseTagRemover());
 
-    // transform() returns a Response, we need its body
     const transformedResponse = rewriter.transform(htmlResponse);
-    body = transformedResponse.body;  // ← FIX: Extract body stream, not Response object
+    body = transformedResponse.body;  // Extract body stream to avoid [object Response]
     
     finalHeaders.set('Content-Type', 'text/html; charset=utf-8');
     finalHeaders.delete('Content-Length'); // Length changed after rewriting
   } 
-  // Handle CSS content
+  // ─── CSS Content ───
   else if (contentType.includes('text/css')) {
     const cssText = await upstream.text();
     const rewrittenCss = rewriteCss(cssText, targetUrl, url.origin);
-    body = rewrittenCss;  // String is OK for Response body
+    body = rewrittenCss;
     finalHeaders.set('Content-Type', 'text/css; charset=utf-8');
     finalHeaders.delete('Content-Length');
   } 
-  // Handle JavaScript content
+  // ─── JavaScript / JSON Content ───
   else if (contentType.includes('javascript') || contentType.includes('application/json')) {
     const jsText = await upstream.text();
     const rewrittenJs = rewriteJs(jsText, targetUrl, url.origin);
     body = rewrittenJs;
     finalHeaders.delete('Content-Length');
   }
-  // Handle other content types (images, etc.)
+  // ─── Other Content (Images, Fonts, etc.) ───
   else {
     body = upstream.body;
   }
 
-  // Return properly constructed Response
   return new Response(body, {
     status: upstream.status,
     statusText: upstream.statusText,
@@ -164,7 +177,15 @@ async function handleRequest(request) {
 
 // ─── URL Validation ───────────────────────────────────────────────────────────
 
-function validateUrl(rawUrl) {
+function isIPAddress(hostname) {
+  // Check for IPv4
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) return true;
+  // Check for IPv6 (simple check)
+  if (hostname.includes(':')) return true;
+  return false;
+}
+
+function validateUrl(rawUrl, proxyHost) {
   let parsed;
   try {
     parsed = new URL(rawUrl);
@@ -177,6 +198,17 @@ function validateUrl(rawUrl) {
   }
 
   const host = parsed.hostname.toLowerCase();
+  
+  // Block IP addresses to prevent Cloudflare Error 1003
+  if (isIPAddress(host)) {
+    return { valid: false, reason: 'Proxying IP addresses is not allowed' };
+  }
+  
+  // Prevent proxying the proxy itself
+  if (host === proxyHost) {
+    return { valid: false, reason: 'Cannot proxy the proxy itself' };
+  }
+
   const isBlocked = BLOCKED_DOMAINS.some(d => host === d || host.endsWith(`.${d}`));
   if (isBlocked) {
     return { valid: false, reason: 'Domain is blocked' };
@@ -250,14 +282,18 @@ function rewriteUrl(originalUrl, targetUrl, proxyOrigin) {
     return originalUrl;
   }
 
-  // If it's already a proxied URL, leave it alone
   if (originalUrl.startsWith(proxyOrigin)) {
     return originalUrl;
   }
 
   try {
-    // Resolve relative to the absolute target URL
     const resolvedUrl = new URL(originalUrl, targetUrl);
+    
+    // Skip rewriting if the resolved URL is an IP address
+    if (isIPAddress(resolvedUrl.hostname)) {
+      return originalUrl;
+    }
+    
     return `${proxyOrigin}/${resolvedUrl.toString()}`;
   } catch (e) {
     return originalUrl;
@@ -280,7 +316,6 @@ function rewriteSrcset(srcset, targetUrl, proxyOrigin) {
 function rewriteCss(cssText, targetUrl, proxyOrigin) {
   if (!cssText) return cssText;
   
-  // Rewrite url(...) in CSS
   return cssText.replace(/url\(['"]?([^'")]+)['"]?\)/g, (match, p1) => {
     const rewritten = rewriteUrl(p1, targetUrl, proxyOrigin);
     return `url('${rewritten}')`;
@@ -290,7 +325,6 @@ function rewriteCss(cssText, targetUrl, proxyOrigin) {
 function rewriteJs(jsText, targetUrl, proxyOrigin) {
   if (!jsText) return jsText;
   
-  // Rewrite common URL patterns in JavaScript
   return jsText.replace(/["'](https?:\/\/[^"']+)["']/g, (match, url) => {
     const rewritten = rewriteUrl(url, targetUrl, proxyOrigin);
     return `"${rewritten}"`;
@@ -306,8 +340,14 @@ function rewriteRedirect(response, proxyUrl, targetUrl) {
 
   if (location) {
     try {
-      // Resolve relative redirects against the target URL
       const resolvedLocation = new URL(location, targetUrl).toString();
+      const redirectUrl = new URL(resolvedLocation);
+      
+      // Block redirects to IP addresses
+      if (isIPAddress(redirectUrl.hostname)) {
+        return jsonError(400, 'Bad Request', 'Redirect to IP address is not allowed');
+      }
+      
       headers.set('Location', `${proxyUrl.origin}/${resolvedLocation}`);
     } catch (e) {
       headers.set('Location', location);
