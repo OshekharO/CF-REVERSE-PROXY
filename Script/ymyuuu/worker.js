@@ -18,6 +18,9 @@ const CF_HEADERS_TO_STRIP = [
   'cf-worker',
 ];
 
+// Set a password to prevent abuse. Leave empty ("") to disable.
+const PROXY_PASSWORD = ""; // e.g., "mySecret123"
+
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
 export default {
@@ -38,6 +41,18 @@ export default {
 
 async function handleRequest(request) {
   const url = new URL(request.url);
+
+  // ─── Password Protection Check ───
+  if (PROXY_PASSWORD) {
+    const auth = request.headers.get('Authorization');
+    const expected = `Basic ${btoa('proxy:' + PROXY_PASSWORD)}`;
+    if (auth !== expected) {
+      return new Response('Authentication required.', {
+        status: 401,
+        headers: { 'WWW-Authenticate': 'Basic realm="CF Reverse Proxy"' }
+      });
+    }
+  }
 
   // Serve the landing page for "/"
   if (url.pathname === '/') {
@@ -67,16 +82,42 @@ async function handleRequest(request) {
 
   const targetUrl = validation.parsed;
 
+  // ─── 2. WebSocket Support ───
+  if (request.headers.get('Upgrade') === 'websocket') {
+    const wsRequest = new Request(targetUrl.toString(), request);
+    return fetch(wsRequest);
+  }
+
   // Build upstream request headers
   const upstreamHeaders = new Headers(request.headers);
   CF_HEADERS_TO_STRIP.forEach(h => upstreamHeaders.delete(h));
   upstreamHeaders.set('Host', targetUrl.hostname);
 
-  // ─── 2. User-Agent Spoofing & 6. Advanced Header Stripping ───
+  // ─── 1. Cookie Rewriting (Request) ───
+  // Convert proxy cookies back to target cookies
+  const incomingCookies = request.headers.get('Cookie');
+  if (incomingCookies) {
+    let cookiesForTarget = [];
+    incomingCookies.split(';').forEach(c => {
+      const trim = c.trim();
+      const prefix = targetUrl.hostname + '__';
+      if (trim.startsWith(prefix)) {
+        // Restore original cookie name and value
+        cookiesForTarget.push(trim.substring(prefix.length));
+      }
+    });
+    if (cookiesForTarget.length > 0) {
+      upstreamHeaders.set('Cookie', cookiesForTarget.join('; '));
+    } else {
+      upstreamHeaders.delete('Cookie');
+    }
+  }
+
+  // ─── 2. UA Spoofing & Header Stripping ───
   upstreamHeaders.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36');
   upstreamHeaders.delete('Origin');
   upstreamHeaders.delete('Referer');
-  upstreamHeaders.set('Sec-Fetch-Site', 'same-origin'); // Prevents CORS blocks on target
+  upstreamHeaders.set('Sec-Fetch-Site', 'same-origin');
 
   const upstreamRequest = new Request(targetUrl.toString(), {
     method: request.method,
@@ -117,15 +158,31 @@ async function handleRequest(request) {
   responseHeaders.delete('Content-Security-Policy');
   responseHeaders.delete('Content-Security-Policy-Report-Only');
 
+  // ─── 1. Cookie Rewriting (Response) ───
+  // Convert target cookies to proxy cookies
+  const setCookies = upstream.headers.getAll('Set-Cookie');
+  if (setCookies.length > 0) {
+    responseHeaders.delete('Set-Cookie');
+    setCookies.forEach(c => {
+      // Strip Domain and Path attributes
+      let rewritten = c.replace(/;\s*Domain=[^;]*/gi, '').replace(/;\s*Path=[^;]*/gi, '');
+      rewritten += '; Path=/'; // Set path to proxy root
+      
+      // Prefix cookie name with target domain
+      rewritten = rewritten.replace(/^([^=]+)=/, `${targetUrl.hostname}__$1=`);
+      responseHeaders.append('Set-Cookie', rewritten);
+    });
+  }
+
   const contentType = (responseHeaders.get('Content-Type') || '').toLowerCase();
   let body;
   let finalHeaders = new Headers(responseHeaders);
 
   // ─── 4. Performance: Asset Caching ───
   if (contentType.includes('text/html')) {
-    finalHeaders.set('Cache-Control', 'no-store'); // Don't cache HTML
+    finalHeaders.set('Cache-Control', 'no-store');
   } else {
-    finalHeaders.set('Cache-Control', 'public, max-age=3600'); // Cache assets for 1 hour
+    finalHeaders.set('Cache-Control', 'public, max-age=3600');
   }
 
   // ─── HTML Content: Use HTMLRewriter ───
@@ -137,7 +194,6 @@ async function handleRequest(request) {
     });
 
     const rewriter = new HTMLRewriter()
-      // Standard tags
       .on('a', new AttributeRewriter('href', targetUrl, url.origin))
       .on('img', new AttributeRewriter('src', targetUrl, url.origin))
       .on('img', new AttributeRewriter('srcset', targetUrl, url.origin, true))
@@ -147,13 +203,11 @@ async function handleRequest(request) {
       .on('iframe', new AttributeRewriter('src', targetUrl, url.origin))
       .on('meta', new MetaRefreshRewriter(targetUrl, url.origin))
       .on('base', new BaseTagRemover())
-      // ─── 3. Media & Source Tag Support ───
       .on('video', new AttributeRewriter('src', targetUrl, url.origin))
       .on('audio', new AttributeRewriter('src', targetUrl, url.origin))
       .on('source', new AttributeRewriter('src', targetUrl, url.origin))
       .on('source', new AttributeRewriter('srcset', targetUrl, url.origin, true))
       .on('object', new AttributeRewriter('data', targetUrl, url.origin))
-      // ─── 1. Client-Side URL Interception ───
       .on('head', new ClientSideInterceptor(url.origin, targetUrl.origin));
 
     const transformedResponse = rewriter.transform(htmlResponse);
@@ -210,17 +264,11 @@ function validateUrl(rawUrl, proxyHost) {
   }
 
   const host = parsed.hostname.toLowerCase();
-  if (isIPAddress(host)) {
-    return { valid: false, reason: 'Proxying IP addresses is not allowed' };
-  }
-  if (host === proxyHost) {
-    return { valid: false, reason: 'Cannot proxy the proxy itself' };
-  }
+  if (isIPAddress(host)) return { valid: false, reason: 'Proxying IP addresses is not allowed' };
+  if (host === proxyHost) return { valid: false, reason: 'Cannot proxy the proxy itself' };
 
   const isBlocked = BLOCKED_DOMAINS.some(d => host === d || host.endsWith(`.${d}`));
-  if (isBlocked) {
-    return { valid: false, reason: 'Domain is blocked' };
-  }
+  if (isBlocked) return { valid: false, reason: 'Domain is blocked' };
 
   return { valid: true, parsed };
 }
@@ -234,11 +282,9 @@ class AttributeRewriter {
     this.proxyOrigin = proxyOrigin;
     this.isSrcset = isSrcset;
   }
-
   element(element) {
     const attr = element.getAttribute(this.attributeName);
     if (!attr) return;
-
     if (this.isSrcset) {
       element.setAttribute(this.attributeName, rewriteSrcset(attr, this.targetUrl, this.proxyOrigin));
     } else {
@@ -252,7 +298,6 @@ class MetaRefreshRewriter {
     this.targetUrl = targetUrl;
     this.proxyOrigin = proxyOrigin;
   }
-
   element(element) {
     const httpEquiv = element.getAttribute('http-equiv');
     if (httpEquiv && httpEquiv.toLowerCase() === 'refresh') {
@@ -273,92 +318,61 @@ class MetaRefreshRewriter {
 }
 
 class BaseTagRemover {
-  element(element) {
-    element.remove();
-  }
+  element(element) { element.remove(); }
 }
 
-// ─── 1. Client-Side Interceptor Class ─────────────────────────────────────────
+// ─── Client-Side Interceptor Class ─────────────────────────────────────────────
 class ClientSideInterceptor {
   constructor(proxyOrigin, targetOrigin) {
     this.proxyOrigin = proxyOrigin;
     this.targetOrigin = targetOrigin;
   }
-  
   element(element) {
     const script = `
       <script>
         (function() {
           const PROXY = "${this.proxyOrigin}";
           const TARGET = "${this.targetOrigin}";
-          
           function rewriteUrl(url) {
-            if (!url || url.startsWith('#') || url.startsWith('data:') || url.startsWith('mailto:') || url.startsWith('blob:') || url.startsWith('javascript:')) {
-              return url;
-            }
+            if (!url || url.startsWith('#') || url.startsWith('data:') || url.startsWith('mailto:') || url.startsWith('blob:') || url.startsWith('javascript:')) return url;
             try {
-              if (url.startsWith(TARGET)) {
-                return PROXY + '/' + url;
-              }
+              if (url.startsWith(TARGET)) return PROXY + '/' + url;
               if (url.startsWith('/') || !url.startsWith('http')) {
                 const absolute = new URL(url, TARGET).toString();
                 return PROXY + '/' + absolute;
               }
               return url;
-            } catch(e) {
-              return url;
-            }
+            } catch(e) { return url; }
           }
-
-          // 1. Intercept Fetch API
           const originalFetch = window.fetch;
           window.fetch = function(input, init) {
-            if (typeof input === 'string') {
-              input = rewriteUrl(input);
-            } else if (input instanceof Request) {
+            if (typeof input === 'string') input = rewriteUrl(input);
+            else if (input instanceof Request) {
               const newUrl = rewriteUrl(input.url);
-              if (newUrl !== input.url) {
-                input = new Request(newUrl, input);
-              }
+              if (newUrl !== input.url) input = new Request(newUrl, input);
             }
             return originalFetch.call(this, input, init);
           };
-
-          // 2. Intercept XMLHttpRequest
           const originalOpen = XMLHttpRequest.prototype.open;
           XMLHttpRequest.prototype.open = function(method, url, ...args) {
-            if (typeof url === 'string') {
-              url = rewriteUrl(url);
-            }
+            if (typeof url === 'string') url = rewriteUrl(url);
             return originalOpen.call(this, method, url, ...args);
           };
-
-          // 3. Intercept History API (pushState/replaceState)
           const originalPushState = history.pushState;
           history.pushState = function(state, title, url) {
-            if (typeof url === 'string') {
-              url = rewriteUrl(url);
-            }
+            if (typeof url === 'string') url = rewriteUrl(url);
             return originalPushState.call(this, state, title, url);
           };
-          
           const originalReplaceState = history.replaceState;
           history.replaceState = function(state, title, url) {
-            if (typeof url === 'string') {
-              url = rewriteUrl(url);
-            }
+            if (typeof url === 'string') url = rewriteUrl(url);
             return originalReplaceState.call(this, state, title, url);
           };
-
-          // 4. Intercept window.open
           const originalWindowOpen = window.open;
           window.open = function(url, ...args) {
-            if (typeof url === 'string') {
-              url = rewriteUrl(url);
-            }
+            if (typeof url === 'string') url = rewriteUrl(url);
             return originalWindowOpen.call(this, url, ...args);
           };
-
         })();
       </script>
     `;
@@ -369,28 +383,13 @@ class ClientSideInterceptor {
 // ─── Rewriting Logic ──────────────────────────────────────────────────────────
 
 function rewriteUrl(originalUrl, targetUrl, proxyOrigin) {
-  if (!originalUrl || 
-      originalUrl.startsWith('#') || 
-      originalUrl.startsWith('data:') || 
-      originalUrl.startsWith('mailto:') || 
-      originalUrl.startsWith('javascript:') ||
-      originalUrl.startsWith('blob:')) {
-    return originalUrl;
-  }
-
-  if (originalUrl.startsWith(proxyOrigin)) {
-    return originalUrl;
-  }
-
+  if (!originalUrl || originalUrl.startsWith('#') || originalUrl.startsWith('data:') || originalUrl.startsWith('mailto:') || originalUrl.startsWith('javascript:') || originalUrl.startsWith('blob:')) return originalUrl;
+  if (originalUrl.startsWith(proxyOrigin)) return originalUrl;
   try {
     const resolvedUrl = new URL(originalUrl, targetUrl);
-    if (isIPAddress(resolvedUrl.hostname)) {
-      return originalUrl;
-    }
+    if (isIPAddress(resolvedUrl.hostname)) return originalUrl;
     return `${proxyOrigin}/${resolvedUrl.toString()}`;
-  } catch (e) {
-    return originalUrl;
-  }
+  } catch (e) { return originalUrl; }
 }
 
 function rewriteSrcset(srcset, targetUrl, proxyOrigin) {
@@ -427,20 +426,14 @@ function rewriteRedirect(response, proxyUrl, targetUrl) {
   const location = response.headers.get('Location');
   const headers = new Headers();
   applyCorsHeaders(headers, null);
-
   if (location) {
     try {
       const resolvedLocation = new URL(location, targetUrl).toString();
       const redirectUrl = new URL(resolvedLocation);
-      if (isIPAddress(redirectUrl.hostname)) {
-        return jsonError(400, 'Bad Request', 'Redirect to IP address is not allowed');
-      }
+      if (isIPAddress(redirectUrl.hostname)) return jsonError(400, 'Bad Request', 'Redirect to IP address is not allowed');
       headers.set('Location', `${proxyUrl.origin}/${resolvedLocation}`);
-    } catch (e) {
-      headers.set('Location', location);
-    }
+    } catch (e) { headers.set('Location', location); }
   }
-
   return new Response(null, { status: response.status, headers });
 }
 
