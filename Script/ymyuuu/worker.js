@@ -72,6 +72,12 @@ async function handleRequest(request) {
   CF_HEADERS_TO_STRIP.forEach(h => upstreamHeaders.delete(h));
   upstreamHeaders.set('Host', targetUrl.hostname);
 
+  // ─── 2. User-Agent Spoofing & 6. Advanced Header Stripping ───
+  upstreamHeaders.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36');
+  upstreamHeaders.delete('Origin');
+  upstreamHeaders.delete('Referer');
+  upstreamHeaders.set('Sec-Fetch-Site', 'same-origin'); // Prevents CORS blocks on target
+
   const upstreamRequest = new Request(targetUrl.toString(), {
     method: request.method,
     headers: upstreamHeaders,
@@ -81,17 +87,12 @@ async function handleRequest(request) {
 
   const upstream = await fetch(upstreamRequest);
 
-  // ─── NEW: Intercept upstream Cloudflare error pages ───
+  // Intercept upstream Cloudflare error pages (Error 1016, etc.)
   if (upstream.status >= 500) {
     const ct = upstream.headers.get('Content-Type') || '';
     if (ct.includes('text/html')) {
-      // Clone the response to read the text without locking the stream
       const errorText = await upstream.clone().text();
-      // Check for common Cloudflare origin errors (1000, 1003, 1016, etc.)
-      if (errorText.includes('Error 1003') || 
-          errorText.includes('Error 1016') || 
-          errorText.includes('Error 1000') || 
-          errorText.includes('Ray ID:')) {
+      if (errorText.includes('Error 1003') || errorText.includes('Error 1016') || errorText.includes('Error 1000') || errorText.includes('Ray ID:')) {
         return jsonError(502, 'Bad Gateway', 'The target website is unavailable, misconfigured, or blocking proxies.');
       }
     }
@@ -104,8 +105,6 @@ async function handleRequest(request) {
 
   // Build response headers
   const responseHeaders = new Headers();
-  
-  // Copy safe headers from upstream
   const safeHeaders = ['Content-Type', 'Content-Length', 'Content-Language', 'Date', 'ETag', 'Last-Modified'];
   safeHeaders.forEach(h => {
     if (upstream.headers.has(h)) {
@@ -115,13 +114,19 @@ async function handleRequest(request) {
   
   applySecurityHeaders(responseHeaders);
   applyCorsHeaders(responseHeaders, request.headers.get('Origin'));
-  responseHeaders.set('Cache-Control', 'no-store');
   responseHeaders.delete('Content-Security-Policy');
   responseHeaders.delete('Content-Security-Policy-Report-Only');
 
   const contentType = (responseHeaders.get('Content-Type') || '').toLowerCase();
   let body;
   let finalHeaders = new Headers(responseHeaders);
+
+  // ─── 4. Performance: Asset Caching ───
+  if (contentType.includes('text/html')) {
+    finalHeaders.set('Cache-Control', 'no-store'); // Don't cache HTML
+  } else {
+    finalHeaders.set('Cache-Control', 'public, max-age=3600'); // Cache assets for 1 hour
+  }
 
   // ─── HTML Content: Use HTMLRewriter ───
   if (contentType.includes('text/html')) {
@@ -132,6 +137,7 @@ async function handleRequest(request) {
     });
 
     const rewriter = new HTMLRewriter()
+      // Standard tags
       .on('a', new AttributeRewriter('href', targetUrl, url.origin))
       .on('img', new AttributeRewriter('src', targetUrl, url.origin))
       .on('img', new AttributeRewriter('srcset', targetUrl, url.origin, true))
@@ -140,13 +146,21 @@ async function handleRequest(request) {
       .on('form', new AttributeRewriter('action', targetUrl, url.origin))
       .on('iframe', new AttributeRewriter('src', targetUrl, url.origin))
       .on('meta', new MetaRefreshRewriter(targetUrl, url.origin))
-      .on('base', new BaseTagRemover());
+      .on('base', new BaseTagRemover())
+      // ─── 3. Media & Source Tag Support ───
+      .on('video', new AttributeRewriter('src', targetUrl, url.origin))
+      .on('audio', new AttributeRewriter('src', targetUrl, url.origin))
+      .on('source', new AttributeRewriter('src', targetUrl, url.origin))
+      .on('source', new AttributeRewriter('srcset', targetUrl, url.origin, true))
+      .on('object', new AttributeRewriter('data', targetUrl, url.origin))
+      // ─── 1. Client-Side URL Interception ───
+      .on('head', new ClientSideInterceptor(url.origin, targetUrl.origin));
 
     const transformedResponse = rewriter.transform(htmlResponse);
-    body = transformedResponse.body;  // Extract body stream to avoid [object Response]
+    body = transformedResponse.body;
     
     finalHeaders.set('Content-Type', 'text/html; charset=utf-8');
-    finalHeaders.delete('Content-Length'); // Length changed after rewriting
+    finalHeaders.delete('Content-Length');
   } 
   // ─── CSS Content ───
   else if (contentType.includes('text/css')) {
@@ -178,9 +192,7 @@ async function handleRequest(request) {
 // ─── URL Validation ───────────────────────────────────────────────────────────
 
 function isIPAddress(hostname) {
-  // Check for IPv4
   if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) return true;
-  // Check for IPv6 (simple check)
   if (hostname.includes(':')) return true;
   return false;
 }
@@ -198,13 +210,9 @@ function validateUrl(rawUrl, proxyHost) {
   }
 
   const host = parsed.hostname.toLowerCase();
-  
-  // Block IP addresses to prevent Cloudflare Error 1003
   if (isIPAddress(host)) {
     return { valid: false, reason: 'Proxying IP addresses is not allowed' };
   }
-  
-  // Prevent proxying the proxy itself
   if (host === proxyHost) {
     return { valid: false, reason: 'Cannot proxy the proxy itself' };
   }
@@ -270,6 +278,94 @@ class BaseTagRemover {
   }
 }
 
+// ─── 1. Client-Side Interceptor Class ─────────────────────────────────────────
+class ClientSideInterceptor {
+  constructor(proxyOrigin, targetOrigin) {
+    this.proxyOrigin = proxyOrigin;
+    this.targetOrigin = targetOrigin;
+  }
+  
+  element(element) {
+    const script = `
+      <script>
+        (function() {
+          const PROXY = "${this.proxyOrigin}";
+          const TARGET = "${this.targetOrigin}";
+          
+          function rewriteUrl(url) {
+            if (!url || url.startsWith('#') || url.startsWith('data:') || url.startsWith('mailto:') || url.startsWith('blob:') || url.startsWith('javascript:')) {
+              return url;
+            }
+            try {
+              if (url.startsWith(TARGET)) {
+                return PROXY + '/' + url;
+              }
+              if (url.startsWith('/') || !url.startsWith('http')) {
+                const absolute = new URL(url, TARGET).toString();
+                return PROXY + '/' + absolute;
+              }
+              return url;
+            } catch(e) {
+              return url;
+            }
+          }
+
+          // 1. Intercept Fetch API
+          const originalFetch = window.fetch;
+          window.fetch = function(input, init) {
+            if (typeof input === 'string') {
+              input = rewriteUrl(input);
+            } else if (input instanceof Request) {
+              const newUrl = rewriteUrl(input.url);
+              if (newUrl !== input.url) {
+                input = new Request(newUrl, input);
+              }
+            }
+            return originalFetch.call(this, input, init);
+          };
+
+          // 2. Intercept XMLHttpRequest
+          const originalOpen = XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open = function(method, url, ...args) {
+            if (typeof url === 'string') {
+              url = rewriteUrl(url);
+            }
+            return originalOpen.call(this, method, url, ...args);
+          };
+
+          // 3. Intercept History API (pushState/replaceState)
+          const originalPushState = history.pushState;
+          history.pushState = function(state, title, url) {
+            if (typeof url === 'string') {
+              url = rewriteUrl(url);
+            }
+            return originalPushState.call(this, state, title, url);
+          };
+          
+          const originalReplaceState = history.replaceState;
+          history.replaceState = function(state, title, url) {
+            if (typeof url === 'string') {
+              url = rewriteUrl(url);
+            }
+            return originalReplaceState.call(this, state, title, url);
+          };
+
+          // 4. Intercept window.open
+          const originalWindowOpen = window.open;
+          window.open = function(url, ...args) {
+            if (typeof url === 'string') {
+              url = rewriteUrl(url);
+            }
+            return originalWindowOpen.call(this, url, ...args);
+          };
+
+        })();
+      </script>
+    `;
+    element.prepend(script, { html: true });
+  }
+}
+
 // ─── Rewriting Logic ──────────────────────────────────────────────────────────
 
 function rewriteUrl(originalUrl, targetUrl, proxyOrigin) {
@@ -288,12 +384,9 @@ function rewriteUrl(originalUrl, targetUrl, proxyOrigin) {
 
   try {
     const resolvedUrl = new URL(originalUrl, targetUrl);
-    
-    // Skip rewriting if the resolved URL is an IP address
     if (isIPAddress(resolvedUrl.hostname)) {
       return originalUrl;
     }
-    
     return `${proxyOrigin}/${resolvedUrl.toString()}`;
   } catch (e) {
     return originalUrl;
@@ -302,7 +395,6 @@ function rewriteUrl(originalUrl, targetUrl, proxyOrigin) {
 
 function rewriteSrcset(srcset, targetUrl, proxyOrigin) {
   if (!srcset) return srcset;
-  
   return srcset.split(',').map(part => {
     let [url, descriptor] = part.trim().split(' ');
     if (url) {
@@ -315,7 +407,6 @@ function rewriteSrcset(srcset, targetUrl, proxyOrigin) {
 
 function rewriteCss(cssText, targetUrl, proxyOrigin) {
   if (!cssText) return cssText;
-  
   return cssText.replace(/url\(['"]?([^'")]+)['"]?\)/g, (match, p1) => {
     const rewritten = rewriteUrl(p1, targetUrl, proxyOrigin);
     return `url('${rewritten}')`;
@@ -324,7 +415,6 @@ function rewriteCss(cssText, targetUrl, proxyOrigin) {
 
 function rewriteJs(jsText, targetUrl, proxyOrigin) {
   if (!jsText) return jsText;
-  
   return jsText.replace(/["'](https?:\/\/[^"']+)["']/g, (match, url) => {
     const rewritten = rewriteUrl(url, targetUrl, proxyOrigin);
     return `"${rewritten}"`;
@@ -342,12 +432,9 @@ function rewriteRedirect(response, proxyUrl, targetUrl) {
     try {
       const resolvedLocation = new URL(location, targetUrl).toString();
       const redirectUrl = new URL(resolvedLocation);
-      
-      // Block redirects to IP addresses
       if (isIPAddress(redirectUrl.hostname)) {
         return jsonError(400, 'Bad Request', 'Redirect to IP address is not allowed');
       }
-      
       headers.set('Location', `${proxyUrl.origin}/${resolvedLocation}`);
     } catch (e) {
       headers.set('Location', location);
@@ -398,102 +485,45 @@ function getLandingPage() {
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔗</text></svg>">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      min-height: 100vh;
-      background: linear-gradient(135deg, #0f0c29 0%, #302b63 55%, #24243e 100%);
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      color: #fff;
-      display: flex; flex-direction: column; overflow-x: hidden;
-    }
-    body::before, body::after {
-      content: ''; position: fixed; border-radius: 50%; pointer-events: none; z-index: 0;
-    }
-    body::before {
-      width: 700px; height: 700px;
-      background: radial-gradient(circle, rgba(108,99,255,0.22) 0%, transparent 65%);
-      top: -200px; left: -200px;
-    }
-    body::after {
-      width: 600px; height: 600px;
-      background: radial-gradient(circle, rgba(62,207,207,0.18) 0%, transparent 65%);
-      bottom: -150px; right: -150px;
-    }
-    header {
-      position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between;
-      padding: 1.25rem 3rem; border-bottom: 1px solid rgba(255,255,255,0.06);
-    }
+    body { min-height: 100vh; background: linear-gradient(135deg, #0f0c29 0%, #302b63 55%, #24243e 100%); font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: #fff; display: flex; flex-direction: column; overflow-x: hidden; }
+    body::before, body::after { content: ''; position: fixed; border-radius: 50%; pointer-events: none; z-index: 0; }
+    body::before { width: 700px; height: 700px; background: radial-gradient(circle, rgba(108,99,255,0.22) 0%, transparent 65%); top: -200px; left: -200px; }
+    body::after { width: 600px; height: 600px; background: radial-gradient(circle, rgba(62,207,207,0.18) 0%, transparent 65%); bottom: -150px; right: -150px; }
+    header { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 1.25rem 3rem; border-bottom: 1px solid rgba(255,255,255,0.06); }
     .header-logo { display: flex; align-items: center; gap: 0.55rem; font-size: 1rem; font-weight: 700; color: rgba(255,255,255,0.9); }
     .header-logo .emoji { font-size: 1.3rem; }
     .header-nav { display: flex; gap: 1.5rem; align-items: center; }
     .header-nav a { font-size: 0.82rem; color: rgba(255,255,255,0.45); text-decoration: none; transition: color 0.2s; }
     .header-nav a:hover { color: #fff; }
-    .main {
-      position: relative; z-index: 1; flex: 1; display: flex; align-items: center; gap: 5rem;
-      padding: 4rem 3rem; max-width: 1200px; margin: 0 auto; width: 100%;
-    }
+    .main { position: relative; z-index: 1; flex: 1; display: flex; align-items: center; gap: 5rem; padding: 4rem 3rem; max-width: 1200px; margin: 0 auto; width: 100%; }
     .hero { flex: 1; min-width: 0; }
-    .hero-badge {
-      display: inline-flex; align-items: center; gap: 0.4rem;
-      background: rgba(108,99,255,0.18); border: 1px solid rgba(108,99,255,0.38);
-      border-radius: 999px; padding: 0.28rem 0.9rem; font-size: 0.74rem; color: #b0aaff; margin-bottom: 1.5rem;
-    }
-    .hero h1 {
-      font-size: clamp(2rem, 3.5vw, 3rem); font-weight: 800; line-height: 1.18; letter-spacing: -1px;
-      margin-bottom: 1.1rem; background: linear-gradient(130deg, #ffffff 35%, #b0aaff 100%);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-    }
+    .hero-badge { display: inline-flex; align-items: center; gap: 0.4rem; background: rgba(108,99,255,0.18); border: 1px solid rgba(108,99,255,0.38); border-radius: 999px; padding: 0.28rem 0.9rem; font-size: 0.74rem; color: #b0aaff; margin-bottom: 1.5rem; }
+    .hero h1 { font-size: clamp(2rem, 3.5vw, 3rem); font-weight: 800; line-height: 1.18; letter-spacing: -1px; margin-bottom: 1.1rem; background: linear-gradient(130deg, #ffffff 35%, #b0aaff 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
     .hero p { color: rgba(255,255,255,0.5); font-size: 1rem; line-height: 1.75; margin-bottom: 2.5rem; max-width: 400px; }
     .feature-list { list-style: none; display: flex; flex-direction: column; gap: 1rem; }
     .feature-list li { display: flex; align-items: center; gap: 0.85rem; font-size: 0.88rem; color: rgba(255,255,255,0.65); }
     .feature-list li strong { color: rgba(255,255,255,0.88); }
-    .feat-icon {
-      width: 34px; height: 34px; flex-shrink: 0; border-radius: 9px;
-      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
-      display: flex; align-items: center; justify-content: center; font-size: 1rem;
-    }
-    .form-card {
-      flex-shrink: 0; width: 100%; max-width: 420px; background: rgba(255,255,255,0.07);
-      backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
-      border: 1px solid rgba(255,255,255,0.14); border-radius: 1.5rem; padding: 2.4rem 2.2rem;
-      box-shadow: 0 12px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.07);
-    }
+    .feat-icon { width: 34px; height: 34px; flex-shrink: 0; border-radius: 9px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; font-size: 1rem; }
+    .form-card { flex-shrink: 0; width: 100%; max-width: 420px; background: rgba(255,255,255,0.07); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,0.14); border-radius: 1.5rem; padding: 2.4rem 2.2rem; box-shadow: 0 12px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.07); }
     .form-card h2 { font-size: 1.2rem; font-weight: 700; margin-bottom: 0.35rem; }
     .form-sub { font-size: 0.82rem; color: rgba(255,255,255,0.42); margin-bottom: 1.8rem; }
     .field-label { display: block; font-size: 0.74rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255,255,255,0.5); margin-bottom: 0.45rem; }
-    .proxy-input {
-      width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14);
-      border-radius: 0.75rem; color: #fff; padding: 0.78rem 1rem; font-size: 0.92rem; font-family: inherit; outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
-    }
+    .proxy-input { width: 100%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); border-radius: 0.75rem; color: #fff; padding: 0.78rem 1rem; font-size: 0.92rem; font-family: inherit; outline: none; transition: border-color 0.2s, box-shadow 0.2s, background 0.2s; }
     .proxy-input::placeholder { color: rgba(255,255,255,0.25); }
     .proxy-input:focus { background: rgba(255,255,255,0.1); border-color: rgba(108,99,255,0.65); box-shadow: 0 0 0 3px rgba(108,99,255,0.18); }
     .error-msg { color: #ff8a8a; font-size: 0.78rem; margin-top: 0.42rem; display: none; }
-    .btn-proxy {
-      display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%; margin-top: 1rem;
-      padding: 0.82rem 1.5rem; background: linear-gradient(90deg, #6c63ff, #3ecfcf); border: none; border-radius: 0.75rem;
-      color: #fff; font-weight: 700; font-size: 0.95rem; cursor: pointer; font-family: inherit;
-      transition: opacity 0.2s, transform 0.12s, box-shadow 0.2s; box-shadow: 0 4px 22px rgba(108,99,255,0.38);
-    }
-    .btn-proxy:hover  { opacity: 0.88; box-shadow: 0 6px 30px rgba(108,99,255,0.55); }
+    .btn-proxy { display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%; margin-top: 1rem; padding: 0.82rem 1.5rem; background: linear-gradient(90deg, #6c63ff, #3ecfcf); border: none; border-radius: 0.75rem; color: #fff; font-weight: 700; font-size: 0.95rem; cursor: pointer; font-family: inherit; transition: opacity 0.2s, transform 0.12s, box-shadow 0.2s; box-shadow: 0 4px 22px rgba(108,99,255,0.38); }
+    .btn-proxy:hover { opacity: 0.88; box-shadow: 0 6px 30px rgba(108,99,255,0.55); }
     .btn-proxy:active { transform: scale(0.98); }
     .divider { height: 1px; background: rgba(255,255,255,0.08); margin: 1.6rem 0; }
     .steps { display: flex; flex-direction: column; gap: 0.75rem; }
     .step { display: flex; align-items: flex-start; gap: 0.7rem; font-size: 0.79rem; color: rgba(255,255,255,0.4); line-height: 1.5; }
-    .step-num {
-      flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; background: rgba(108,99,255,0.22);
-      font-size: 0.68rem; font-weight: 700; color: #b0aaff; display: flex; align-items: center; justify-content: center; margin-top: 1px;
-    }
+    .step-num { flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; background: rgba(108,99,255,0.22); font-size: 0.68rem; font-weight: 700; color: #b0aaff; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
     footer { position: relative; z-index: 1; text-align: center; padding: 1.25rem 3rem; font-size: 0.72rem; color: rgba(255,255,255,0.22); border-top: 1px solid rgba(255,255,255,0.05); }
     footer a { color: rgba(255,255,255,0.32); text-decoration: none; transition: color 0.2s; }
     footer a:hover { color: #fff; }
-    @media (max-width: 860px) {
-      .main { flex-direction: column; align-items: stretch; gap: 2.5rem; padding: 2.5rem 1.5rem; }
-      .form-card { max-width: 100%; } .hero p { max-width: 100%; }
-      header { padding: 1rem 1.5rem; } footer  { padding: 1rem 1.5rem; }
-    }
-    @media (max-width: 480px) {
-      .hero h1 { font-size: 1.85rem; } .form-card { padding: 1.75rem 1.4rem; } .header-nav { display: none; }
-    }
+    @media (max-width: 860px) { .main { flex-direction: column; align-items: stretch; gap: 2.5rem; padding: 2.5rem 1.5rem; } .form-card { max-width: 100%; } .hero p { max-width: 100%; } header { padding: 1rem 1.5rem; } footer { padding: 1rem 1.5rem; } }
+    @media (max-width: 480px) { .hero h1 { font-size: 1.85rem; } .form-card { padding: 1.75rem 1.4rem; } .header-nav { display: none; } }
   </style>
 </head>
 <body>
