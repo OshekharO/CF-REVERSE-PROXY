@@ -260,8 +260,6 @@ class TextRewriter {
       const rewritten = rewriteTextContent(this.buffer, this.incomingHost);
       text.replace(rewritten);
       this.buffer = '';
-    } else {
-      text.remove();
     }
   }
 }
@@ -448,6 +446,13 @@ async function processResponse(originalResponse, targetDomain, incomingHost) {
     );
     const text = await transformedResponse.text();
     const injected = text.replace(/<\/body>/i, `${config.injection_script}</body>`);
+    if (injected === text) {
+      return new Response(text + config.injection_script, {
+        status: transformedResponse.status,
+        statusText: transformedResponse.statusText,
+        headers: transformedResponse.headers
+      });
+    }
     return new Response(injected, {
       status: transformedResponse.status,
       statusText: transformedResponse.statusText,
