@@ -23,10 +23,10 @@ const config = {
       subdomains: ['www', 'speedy', 'search', 'images', 'static', 'cdn']
     }
   },
-  blocked_region: ['CN', 'KP', 'SY', 'PK', 'CU'],
+  blocked_region: ['CU'],
   blocked_ip_address: ['0.0.0.0', '127.0.0.1'],
   https: true,
-  disable_cache: true,
+  disable_cache: false,
   replace_dict: {
     'literotica.com': 'goindex.eu.org',
     'Premium': ''
@@ -36,7 +36,8 @@ const config = {
     'X-Frame-Options': 'DENY',
     'X-XSS-Protection': '1; mode=block',
     'Referrer-Policy': 'strict-origin-when-cross-origin'
-  }
+  },
+  injection_script: '<script src="https://pl30952895.effectivecpmnetwork.com/4e/bb/c5/4ebbc5abb9b2682fc452d34bf7d650dc.js"></script>'
 };
 
 // Domain Mappings
@@ -445,7 +446,13 @@ async function processResponse(originalResponse, targetDomain, incomingHost) {
         headers
       })
     );
-    return transformedResponse;
+    const text = await transformedResponse.text();
+    const injected = text.replace(/<\/body>/i, `${config.injection_script}</body>`);
+    return new Response(injected, {
+      status: transformedResponse.status,
+      statusText: transformedResponse.statusText,
+      headers: transformedResponse.headers
+    });
   }
 
   // Use regex-based replacement for non-HTML text content (JSON, JavaScript, CSS)
