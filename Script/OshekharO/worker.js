@@ -143,6 +143,13 @@ function createModifiedRequest(originalRequest, targetUrl, targetDomain, incomin
 }
 
 async function processResponse(originalResponse, targetDomain, incomingHost) {
+    // Informational / protocol-switch responses (e.g. 101 Switching Protocols
+    // from a WebSocket upgrade) cannot pass through new Response() — the
+    // constructor only allows status 200-599 and throws otherwise, which turns
+    // every successful WebSocket handshake into a 500. Return them untouched.
+    if (originalResponse.status < 200 || originalResponse.status > 599) {
+        return originalResponse;
+    }
     const headers = new Headers(originalResponse.headers);
     
     // Apply cache settings
