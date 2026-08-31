@@ -20,6 +20,9 @@ const config = {
     },
     target: {
       main: 'literotica.com',
+      // Set to false when the target has no www subdomain: requests would
+      // otherwise be sent to a hostname that does not resolve.
+      use_www: true,
       subdomains: ['www', 'speedy', 'search', 'images', 'static', 'cdn']
     }
   },
@@ -40,13 +43,21 @@ const config = {
   injection_script: '<script src="https://pl30952895.effectivecpmnetwork.com/4e/bb/c5/4ebbc5abb9b2682fc452d34bf7d650dc.js"></script>'
 };
 
+// Target main hostname, with the www prefix only when the target actually has
+// one (config.domains.target.use_www). Defaults to true to preserve the
+// previous behaviour.
+function targetMainHost() {
+  const { main, use_www } = config.domains.target;
+  return use_www === false ? main : `www.${main}`;
+}
+
 // Domain Mappings
 function generateDomainMappings() {
   const mappings = {};
   
   // Handle both with and without www for custom domains
-  mappings[config.domains.custom.main] = `www.${config.domains.target.main}`;
-  mappings[`www.${config.domains.custom.main}`] = `www.${config.domains.target.main}`;
+  mappings[config.domains.custom.main] = targetMainHost();
+  mappings[`www.${config.domains.custom.main}`] = targetMainHost();
   
   // Subdomains
   config.domains.custom.subdomains.forEach(subdomain => {
@@ -121,7 +132,7 @@ async function fetchAndApply(request) {
 
     const url = new URL(request.url);
     const incomingHost = url.hostname;
-    const targetDomain = domain_map[incomingHost] || `www.${config.domains.target.main}`;
+    const targetDomain = domain_map[incomingHost] || targetMainHost();
 
     // Prevent loop
     if (incomingHost === targetDomain) {
@@ -145,7 +156,7 @@ async function fetchAndApply(request) {
 
     if (!response) return new Response('Upstream Timeout', { status: 504 });
 
-    return await processResponse(response, targetDomain, incomingHost);
+    return await processResponse(response, targetDomain, incomingHost, request.headers.get('Origin'));
 
   } catch (err) {
     console.error('Error:', err);
@@ -379,7 +390,29 @@ function createHTMLRewriter(incomingHost) {
     .on('style', new TextRewriter(incomingHost));
 }
 
-async function processResponse(originalResponse, targetDomain, incomingHost) {
+// Apply CORS headers.
+//
+// Access-Control-Allow-Origin: * cannot be combined with
+// Access-Control-Allow-Credentials: true. Per the Fetch spec CORS check, a
+// request with credentials: 'include' fails unless ACAO matches the request
+// Origin exactly. Echoing the Origin (plus Vary: Origin, so caches do not
+// serve one site's response to another) keeps credentialed requests working;
+// with no Origin the wildcard is used without claiming credential support,
+// which is a valid combination.
+function applyCorsHeaders(headers, requestOrigin) {
+  if (requestOrigin) {
+    headers.set('Access-Control-Allow-Origin', requestOrigin);
+    headers.set('Access-Control-Allow-Credentials', 'true');
+    headers.append('Vary', 'Origin');
+  } else {
+    headers.set('Access-Control-Allow-Origin', '*');
+  }
+  headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  headers.set('Access-Control-Allow-Headers', '*');
+  return headers;
+}
+
+async function processResponse(originalResponse, targetDomain, incomingHost, requestOrigin) {
   const headers = new Headers(originalResponse.headers);
 
   if (config.disable_cache) {
@@ -388,10 +421,7 @@ async function processResponse(originalResponse, targetDomain, incomingHost) {
     headers.set('Expires', '0');
   }
 
-  headers.set('Access-Control-Allow-Origin', '*');
-  headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  headers.set('Access-Control-Allow-Headers', '*');
-  headers.set('Access-Control-Allow-Credentials', 'true');
+  applyCorsHeaders(headers, requestOrigin);
 
   headers.delete('Content-Security-Policy');
   headers.delete('Content-Security-Policy-Report-Only');
@@ -557,14 +587,8 @@ function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function handleOptions() {
-  return new Response(null, {
-    status: 200,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': '*',
-      'Access-Control-Max-Age': '86400'
-    }
-  });
+function handleOptions(request) {
+  const headers = new Headers({ 'Access-Control-Max-Age': '86400' });
+  applyCorsHeaders(headers, request && request.headers.get('Origin'));
+  return new Response(null, { status: 200, headers });
 }

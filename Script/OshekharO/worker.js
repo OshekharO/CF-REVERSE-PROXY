@@ -59,6 +59,12 @@ const config = {
 };
 
 addEventListener('fetch', event => {
+    // Answer CORS preflights here — a second addEventListener below cannot
+    // run for OPTIONS because this unconditional handler always wins.
+    if (event.request.method === 'OPTIONS') {
+        event.respondWith(handleOptions(event.request));
+        return;
+    }
     event.respondWith(fetchAndApply(event.request));
 });
 
@@ -150,6 +156,17 @@ async function processResponse(originalResponse, targetDomain, incomingHost) {
     if (originalResponse.status < 200 || originalResponse.status > 599) {
         return originalResponse;
     }
+
+    // Pass through streaming responses (e.g. Server-Sent Events from LLM APIs)
+    // untouched — buffering them for text replacement breaks incremental delivery.
+    if ((originalResponse.headers.get('content-type') || '').includes('text/event-stream')) {
+        return new Response(originalResponse.body, {
+            status: originalResponse.status,
+            statusText: originalResponse.statusText,
+            headers: originalResponse.headers
+        });
+    }
+
     const headers = new Headers(originalResponse.headers);
     
     // Apply cache settings
@@ -326,13 +343,6 @@ async function replace_all_domains(text, incomingHost) {
 function escapeRegExp(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
-
-// Handle OPTIONS requests for CORS preflight
-addEventListener('fetch', event => {
-    if (event.request.method === 'OPTIONS') {
-        event.respondWith(handleOptions(event.request));
-    }
-});
 
 function handleOptions(request) {
     return new Response(null, {

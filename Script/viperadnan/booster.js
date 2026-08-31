@@ -86,7 +86,10 @@ async function fetchAndApply(request) {
       headers: request.headers
     });
   } else {
-    const requestBody = await request.text();
+    // Read the body as raw bytes: request.text() decodes as UTF-8, which
+    // corrupts binary uploads (images, audio, protobuf, gzip) by replacing
+    // every invalid byte sequence with U+FFFD.
+    const requestBody = await request.arrayBuffer();
     newRequest = new Request(requestURL, {
       cf: {
         cacheEverything: config.optimization.cacheEverything,
