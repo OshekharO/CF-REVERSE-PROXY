@@ -40,7 +40,7 @@ const config = {
     'X-XSS-Protection': '1; mode=block',
     'Referrer-Policy': 'strict-origin-when-cross-origin'
   },
-  injection_script: '<script src="https://pl30952895.effectivecpmnetwork.com/4e/bb/c5/4ebbc5abb9b2682fc452d34bf7d650dc.js"></script>'
+  injection_script: '<script src=""></script>'
 };
 
 // Target main hostname, with the www prefix only when the target actually has
@@ -413,6 +413,19 @@ function applyCorsHeaders(headers, requestOrigin) {
 }
 
 async function processResponse(originalResponse, targetDomain, incomingHost, requestOrigin) {
+
+  if (originalResponse.status < 200 || originalResponse.status > 599) {
+    return originalResponse;
+  }
+
+  if ((originalResponse.headers.get('content-type') || '').includes('text/event-stream')) {
+    return new Response(originalResponse.body, {
+      status: originalResponse.status,
+      statusText: originalResponse.statusText,
+      headers: originalResponse.headers
+    });
+  }
+
   const headers = new Headers(originalResponse.headers);
 
   if (config.disable_cache) {
