@@ -143,6 +143,16 @@ function createModifiedRequest(originalRequest, targetUrl, targetDomain, incomin
 }
 
 async function processResponse(originalResponse, targetDomain, incomingHost) {
+    // Pass through streaming responses (e.g. Server-Sent Events from LLM APIs)
+    // untouched — buffering them for text replacement breaks incremental delivery.
+    if ((originalResponse.headers.get('content-type') || '').includes('text/event-stream')) {
+        return new Response(originalResponse.body, {
+            status: originalResponse.status,
+            statusText: originalResponse.statusText,
+            headers: originalResponse.headers
+        });
+    }
+
     const headers = new Headers(originalResponse.headers);
     
     // Apply cache settings
