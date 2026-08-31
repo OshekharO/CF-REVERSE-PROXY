@@ -106,11 +106,23 @@ async function fetchAndApply(request) {
   try {
     const region = request.headers.get('cf-ipcountry')?.toUpperCase();
     const ip_address = request.headers.get('cf-connecting-ip');
-    const user_agent = request.headers.get('user-agent');
+    const user_agent = request.headers.get('user-agent') || '';
+    const accept = request.headers.get('accept') || '';
+    const acceptLanguage = request.headers.get('accept-language') || '';
 
-    // Header validation
-    if (!region || !ip_address || !user_agent) {
-      return new Response('Access denied: Missing required headers.', { 
+    // Bots and scrapers often omit browser-standard headers.
+    if (!user_agent || !accept || !acceptLanguage) {
+      return new Response('Access denied: Missing required headers.', {
+        status: 403,
+        headers: { 'Content-Type': 'text/plain; charset=UTF-8' }
+      });
+    }
+
+    // Block common non-browser user-agent signatures.
+    const botSignatures = ['bot', 'crawl', 'spider', 'scrape', 'curl', 'wget', 'python', 'java', 'httpclient', 'go-http', 'axios', 'requests', 'scrapy'];
+    const lowerUa = user_agent.toLowerCase();
+    if (botSignatures.some(sig => lowerUa.includes(sig))) {
+      return new Response('Access denied: Bot detected.', {
         status: 403,
         headers: { 'Content-Type': 'text/plain; charset=UTF-8' }
       });
