@@ -59,6 +59,12 @@ const config = {
 };
 
 addEventListener('fetch', event => {
+    // Answer CORS preflights here — a second addEventListener below cannot
+    // run for OPTIONS because this unconditional handler always wins.
+    if (event.request.method === 'OPTIONS') {
+        event.respondWith(handleOptions(event.request));
+        return;
+    }
     event.respondWith(fetchAndApply(event.request));
 });
 
@@ -329,13 +335,6 @@ async function replace_all_domains(text, incomingHost) {
 function escapeRegExp(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
-
-// Handle OPTIONS requests for CORS preflight
-addEventListener('fetch', event => {
-    if (event.request.method === 'OPTIONS') {
-        event.respondWith(handleOptions(event.request));
-    }
-});
 
 function handleOptions(request) {
     return new Response(null, {
