@@ -149,6 +149,14 @@ function createModifiedRequest(originalRequest, targetUrl, targetDomain, incomin
 }
 
 async function processResponse(originalResponse, targetDomain, incomingHost) {
+    // Informational / protocol-switch responses (e.g. 101 Switching Protocols
+    // from a WebSocket upgrade) cannot pass through new Response() — the
+    // constructor only allows status 200-599 and throws otherwise, which turns
+    // every successful WebSocket handshake into a 500. Return them untouched.
+    if (originalResponse.status < 200 || originalResponse.status > 599) {
+        return originalResponse;
+    }
+
     // Pass through streaming responses (e.g. Server-Sent Events from LLM APIs)
     // untouched — buffering them for text replacement breaks incremental delivery.
     if ((originalResponse.headers.get('content-type') || '').includes('text/event-stream')) {
