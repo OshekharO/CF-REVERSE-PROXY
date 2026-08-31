@@ -2,8 +2,29 @@
 
 const WORKER_HOSTNAME = "proxy.oshekher.workers.dev";
 
-let real_hostname = null;
-let real_path = null;
+class AttributeRewriter {
+    constructor(attributeName, realHostname) {
+        this.attributeName = attributeName;
+        this.realHostname = realHostname;
+    }
+
+    element(element) {
+        const attribute = element.getAttribute(this.attributeName);
+        if (attribute) {
+            console.log(`Rewriting ${this.attributeName} from ${attribute}`);
+            if (attribute.startsWith('https://')) {
+                element.setAttribute(this.attributeName, 'https://' + WORKER_HOSTNAME + '/' + this.realHostname + attribute.substring(8));
+            } else if (attribute.startsWith('//')) {
+                element.setAttribute(this.attributeName, '//' + WORKER_HOSTNAME + '/' + this.realHostname + attribute.substring(2));
+            } else if (attribute.startsWith('/')) {
+                element.setAttribute(this.attributeName, 'https://' + WORKER_HOSTNAME + '/' + this.realHostname + attribute);
+            } else if (!attribute.startsWith('http')) {
+                element.setAttribute(this.attributeName, 'https://' + WORKER_HOSTNAME + '/' + this.realHostname + '/' + attribute);
+            }
+            console.log(`Rewritten ${this.attributeName} to ${element.getAttribute(this.attributeName)}`);
+        }
+    }
+}
 
 async function handleRequest(req) {
     let parsedUrl = new URL(req.url);
@@ -14,9 +35,12 @@ async function handleRequest(req) {
         parsedUrl = new URL(referer);
     }
 
-    // Intercept the real domain name and path
+    // Intercept the real domain name and path — keep these local to this request
     let first_char_index = parsedUrl.href.indexOf(WORKER_HOSTNAME) + WORKER_HOSTNAME.length + 1;
     let second_char_index = parsedUrl.href.indexOf('/', first_char_index + 1);
+
+    let real_hostname;
+    let real_path;
 
     if (second_char_index === -1) {
         let attribute_index = parsedUrl.href.indexOf('?', first_char_index);
@@ -60,39 +84,20 @@ async function handleRequest(req) {
         return clean_res;
     }
 
+    // Create the rewriter per-request so each handler captures the correct
+    // real_hostname in its closure. A module-level rewriter would share
+    // handler instances across concurrent requests, causing cross-request
+    // hostname leakage.
+    const rewriter = new HTMLRewriter()
+        .on("a", new AttributeRewriter("href", real_hostname))
+        .on("img", new AttributeRewriter("src", real_hostname))
+        .on("img", new AttributeRewriter("data-src", real_hostname))
+        .on("iframe", new AttributeRewriter("src", real_hostname))
+        .on("link", new AttributeRewriter("href", real_hostname))
+        .on("script", new AttributeRewriter("src", real_hostname));
+
     return rewriter.transform(clean_res);
 }
-
-class AttributeRewriter {
-    constructor(attributeName) {
-        this.attributeName = attributeName;
-    }
-
-    element(element) {
-        const attribute = element.getAttribute(this.attributeName);
-        if (attribute) {
-            console.log(`Rewriting ${this.attributeName} from ${attribute}`);
-            if (attribute.startsWith('https://')) {
-                element.setAttribute(this.attributeName, 'https://' + WORKER_HOSTNAME + '/' + real_hostname + attribute.substring(8));
-            } else if (attribute.startsWith('//')) {
-                element.setAttribute(this.attributeName, '//' + WORKER_HOSTNAME + '/' + real_hostname + attribute.substring(2));
-            } else if (attribute.startsWith('/')) {
-                element.setAttribute(this.attributeName, 'https://' + WORKER_HOSTNAME + '/' + real_hostname + attribute);
-            } else if (!attribute.startsWith('http')) {
-                element.setAttribute(this.attributeName, 'https://' + WORKER_HOSTNAME + '/' + real_hostname + '/' + attribute);
-            }
-            console.log(`Rewritten ${this.attributeName} to ${element.getAttribute(this.attributeName)}`);
-        }
-    }
-}
-
-const rewriter = new HTMLRewriter()
-    .on("a", new AttributeRewriter("href"))
-    .on("img", new AttributeRewriter("src"))
-    .on("img", new AttributeRewriter("data-src"))
-    .on("iframe", new AttributeRewriter("src"))
-    .on("link", new AttributeRewriter("href"))
-    .on("script", new AttributeRewriter("src"));
 
 addEventListener("fetch", event => {
     event.respondWith(handleRequest(event.request));
