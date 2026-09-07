@@ -361,12 +361,17 @@ function replaceDomains(text) {
   return result;
 }
 
+// Pre-compile replacement regex rules from replace_dict
+const compiledReplaceDictRules = Object.entries(config.replace_dict).map(([key, value]) => ({
+  re: new RegExp(escapeRegExp(key), 'gi'),
+  value
+}));
+
 // Apply text replacements from replace_dict
 function applyReplaceDict(text) {
   let result = text;
-  for (const [key, value] of Object.entries(config.replace_dict)) {
-    const re = new RegExp(escapeRegExp(key), 'gi');
-    result = result.replace(re, value);
+  for (let i = 0; i < compiledReplaceDictRules.length; i++) {
+    result = result.replace(compiledReplaceDictRules[i].re, compiledReplaceDictRules[i].value);
   }
   return result;
 }
