@@ -251,20 +251,52 @@ async function processResponse(originalResponse, targetDomain, incomingHost) {
     });
 }
 
+
+// Pre-compiled domain mapping rules at module scope to avoid re-compiling RegExps per request
+const DOMAIN_MAPPINGS = {
+    'www.literotica.com': 'goindex.eu.org',
+    'speedy.literotica.com': 'speedy.goindex.eu.org',
+    'search.literotica.com': 'search.goindex.eu.org',
+    'images.literotica.com': 'images.goindex.eu.org',
+    'static.literotica.com': 'static.goindex.eu.org',
+    'cdn.literotica.com': 'cdn.goindex.eu.org'
+};
+
+const PRECOMPILED_DOMAIN_RULES = Object.entries(DOMAIN_MAPPINGS).map(([originalDomain, yourDomain]) => ({
+    full: new RegExp(`https?://${escapeRegExp(originalDomain)}`, 'gi'),
+    fullRep: `https://${yourDomain}`,
+    proto: new RegExp(`//${escapeRegExp(originalDomain)}`, 'gi'),
+    protoRep: `//${yourDomain}`,
+    dquote: new RegExp(`"${escapeRegExp(originalDomain)}"`, 'gi'),
+    dquoteRep: `"${yourDomain}"`,
+    squote: new RegExp(`'${escapeRegExp(originalDomain)}'`, 'gi'),
+    squoteRep: `'${yourDomain}'`
+}));
+
+const CATCHALL_FULL_RE = /https?:\/\/([a-zA-Z0-9-]+\.)?literotica\.com/gi;
+const CATCHALL_PROTO_RE = /\/\/([a-zA-Z0-9-]+\.)?literotica\.com/gi;
+
+const REVERSE_MAP = {
+    'www.literotica.com': 'goindex.eu.org',
+    'speedy.literotica.com': 'speedy.goindex.eu.org',
+    'search.literotica.com': 'search.goindex.eu.org',
+    'images.literotica.com': 'images.goindex.eu.org',
+    'static.literotica.com': 'static.goindex.eu.org',
+    'cdn.literotica.com': 'cdn.goindex.eu.org'
+};
+
+const REVERSE_MAP_ENTRIES = Object.entries(REVERSE_MAP);
+
 function getWorkerDomain(targetHostname) {
-    // Reverse mapping: target domain -> your domain
-    const reverseMap = {
-        'www.literotica.com': 'goindex.eu.org',
-        'speedy.literotica.com': 'speedy.goindex.eu.org',
-        'search.literotica.com': 'search.goindex.eu.org',
-        'images.literotica.com': 'images.goindex.eu.org',
-        'static.literotica.com': 'static.goindex.eu.org',
-        'cdn.literotica.com': 'cdn.goindex.eu.org'
-    };
+    // Fast O(1) exact lookup
+    if (REVERSE_MAP[targetHostname]) {
+        return REVERSE_MAP[targetHostname];
+    }
     
-    // Find matching domain (supports subdomains)
-    for (const [target, worker] of Object.entries(reverseMap)) {
-        if (targetHostname === target || targetHostname.endsWith('.' + target)) {
+    // Subdomain suffix lookup
+    for (let i = 0; i < REVERSE_MAP_ENTRIES.length; i++) {
+        const [target, worker] = REVERSE_MAP_ENTRIES[i];
+        if (targetHostname.endsWith('.' + target)) {
             return worker;
         }
     }
@@ -273,59 +305,34 @@ function getWorkerDomain(targetHostname) {
     return 'goindex.eu.org';
 }
 
-async function replace_all_domains(text, incomingHost) {
+function replace_all_domains(text, incomingHost) {
     let replaced_text = text;
     
-    // Replace all literotica.com subdomains with corresponding your domains
-    const domainMappings = {
-        'www.literotica.com': 'goindex.eu.org',
-        'speedy.literotica.com': 'speedy.goindex.eu.org',
-        'search.literotica.com': 'search.goindex.eu.org',
-        'images.literotica.com': 'images.goindex.eu.org',
-        'static.literotica.com': 'static.goindex.eu.org',
-        'cdn.literotica.com': 'cdn.goindex.eu.org'
-    };
-
-    for (const [originalDomain, yourDomain] of Object.entries(domainMappings)) {
-        // Replace full URLs
-        replaced_text = replaced_text.replace(
-            new RegExp(`https?://${escapeRegExp(originalDomain)}`, 'gi'),
-            `https://${yourDomain}`
-        );
-        
-        // Replace protocol-relative URLs
-        replaced_text = replaced_text.replace(
-            new RegExp(`//${escapeRegExp(originalDomain)}`, 'gi'),
-            `//${yourDomain}`
-        );
-        
-        // Replace in JSON/JavaScript contexts
-        replaced_text = replaced_text.replace(
-            new RegExp(`"${escapeRegExp(originalDomain)}"`, 'gi'),
-            `"${yourDomain}"`
-        );
-        
-        replaced_text = replaced_text.replace(
-            new RegExp(`'${escapeRegExp(originalDomain)}'`, 'gi'),
-            `'${yourDomain}'`
-        );
+    // Apply pre-compiled domain replacements (Bolt performance optimization: pre-compiled module-level RegExps)
+    for (let i = 0; i < PRECOMPILED_DOMAIN_RULES.length; i++) {
+        const item = PRECOMPILED_DOMAIN_RULES[i];
+        replaced_text = replaced_text
+            .replace(item.full, item.fullRep)
+            .replace(item.proto, item.protoRep)
+            .replace(item.dquote, item.dquoteRep)
+            .replace(item.squote, item.squoteRep);
     }
 
-    // Also replace any other literotica.com subdomain (catch-all)
+    // Replace any other literotica.com subdomain (catch-all) using pre-compiled RegExp
     replaced_text = replaced_text.replace(
-        /https?:\/\/([a-zA-Z0-9-]+\.)?literotica\.com/gi, 
-        (match) => {
-            const url = new URL(match);
-            const yourDomain = getWorkerDomain(url.hostname);
+        CATCHALL_FULL_RE,
+        (match, sub) => {
+            const hostname = sub ? `${sub}literotica.com` : 'literotica.com';
+            const yourDomain = getWorkerDomain(hostname);
             return `https://${yourDomain}`;
         }
     );
     
-    // Replace protocol-relative catch-all
+    // Replace protocol-relative catch-all using pre-compiled RegExp
     replaced_text = replaced_text.replace(
-        /\/\/([a-zA-Z0-9-]+\.)?literotica\.com/gi,
-        (match) => {
-            const hostname = match.replace('//', '');
+        CATCHALL_PROTO_RE,
+        (match, sub) => {
+            const hostname = sub ? `${sub}literotica.com` : 'literotica.com';
             const yourDomain = getWorkerDomain(hostname);
             return `//${yourDomain}`;
         }
