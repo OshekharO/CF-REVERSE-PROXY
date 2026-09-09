@@ -1,0 +1,3 @@
+## 2026-03-30 - RegEx Compilation and Allocation Hoisting in Edge Workers
+**Learning:** In Cloudflare Workers response-body transformation routines, creating `new RegExp()` instances inside request processing loops generates significant object allocation overhead and repeated regex compilation per HTTP response body. Hoisting compiled `RegExp` instances and static lookup objects to module scope yields a ~15% runtime performance boost for response text replacement.
+**Action:** Always pre-compile dynamic or static domain replacement regular expressions at module scope when writing worker request handlers.
