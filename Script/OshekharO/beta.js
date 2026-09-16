@@ -337,27 +337,36 @@ function rewriteSrcset(srcset, incomingHost) {
   }).join(', ');
 }
 
+// Pre-compile domain replacement rules at module scope to avoid re-compiling RegExps per invocation
+const COMPILED_DOMAIN_RULES = Object.entries(reverse_map).map(([targetDomain, customDomain]) => ({
+  fullRe: new RegExp(`https?://${escapeRegExp(targetDomain)}`, 'gi'),
+  fullRep: `https://${customDomain}`,
+  protoRe: new RegExp(`//${escapeRegExp(targetDomain)}`, 'gi'),
+  protoRep: `//${customDomain}`
+}));
+
+// Pre-compile non-HTML (JSON / JavaScript) replacement rules
+const COMPILED_NON_HTML_RULES = Object.entries(reverse_map).map(([targetDomain, customDomain]) => ({
+  dquoteRe: new RegExp(`"${escapeRegExp(targetDomain)}"`, 'gi'),
+  dquoteRep: `"${customDomain}"`,
+  squoteRe: new RegExp(`'${escapeRegExp(targetDomain)}'`, 'gi'),
+  squoteRep: `'${customDomain}'`,
+  slashRe: new RegExp(`\\\\/${escapeRegExp(targetDomain)}`, 'gi'),
+  slashRep: `\\/${customDomain}`
+}));
+
+// Pre-compiled catch-all RegExps
+const CATCHALL_FULL_RE = new RegExp(`https?://([a-zA-Z0-9-]+\\.)?${escapeRegExp(config.domains.target.main)}`, 'gi');
+const CATCHALL_PROTO_RE = new RegExp(`//([a-zA-Z0-9-]+\\.)?${escapeRegExp(config.domains.target.main)}`, 'gi');
+
 // Replace domain occurrences in text (shared logic for rewriteTextContent and replace_all_domains)
 function replaceDomains(text) {
   let result = text;
-  const allTargetDomains = Object.keys(reverse_map);
-  
-  for (const targetDomain of allTargetDomains) {
-    const customDomain = reverse_map[targetDomain];
-    
-    // Replace full URLs with protocol
-    result = result.replace(
-      new RegExp(`https?://${escapeRegExp(targetDomain)}`, 'gi'),
-      `https://${customDomain}`
-    );
-    
-    // Replace protocol-relative URLs
-    result = result.replace(
-      new RegExp(`//${escapeRegExp(targetDomain)}`, 'gi'),
-      `//${customDomain}`
-    );
+  // Bolt performance optimization: iterate over pre-compiled RegExps
+  for (let i = 0; i < COMPILED_DOMAIN_RULES.length; i++) {
+    const rule = COMPILED_DOMAIN_RULES[i];
+    result = result.replace(rule.fullRe, rule.fullRep).replace(rule.protoRe, rule.protoRep);
   }
-  
   return result;
 }
 
@@ -566,33 +575,18 @@ async function replace_all_domains(text, incomingHost) {
   let replaced_text = applyReplaceDict(text);
   replaced_text = replaceDomains(replaced_text);
 
-  // Additional replacements specific to non-HTML content (JSON/JavaScript)
-  const allTargetDomains = Object.keys(reverse_map);
-  
-  for (const targetDomain of allTargetDomains) {
-    const customDomain = reverse_map[targetDomain];
-    
-    // Replace in JSON/JavaScript contexts (quoted)
-    replaced_text = replaced_text.replace(
-      new RegExp(`"${escapeRegExp(targetDomain)}"`, 'gi'),
-      `"${customDomain}"`
-    );
-    
-    replaced_text = replaced_text.replace(
-      new RegExp(`'${escapeRegExp(targetDomain)}'`, 'gi'),
-      `'${customDomain}'`
-    );
-    
-    // Replace in various other contexts
-    replaced_text = replaced_text.replace(
-      new RegExp(`\\\\/${escapeRegExp(targetDomain)}`, 'gi'),
-      `\\/${customDomain}`
-    );
+  // Additional replacements specific to non-HTML content (JSON/JavaScript) using pre-compiled RegExps
+  for (let i = 0; i < COMPILED_NON_HTML_RULES.length; i++) {
+    const rule = COMPILED_NON_HTML_RULES[i];
+    replaced_text = replaced_text
+      .replace(rule.dquoteRe, rule.dquoteRep)
+      .replace(rule.squoteRe, rule.squoteRep)
+      .replace(rule.slashRe, rule.slashRep);
   }
 
   // Catch-all for any target domain subdomain that might have been missed
   replaced_text = replaced_text.replace(
-    new RegExp(`https?://([a-zA-Z0-9-]+\\.)?${escapeRegExp(config.domains.target.main)}`, 'gi'), 
+    CATCHALL_FULL_RE,
     (match) => {
       const url = new URL(match);
       const customDomain = getCustomDomain(url.hostname);
@@ -602,7 +596,7 @@ async function replace_all_domains(text, incomingHost) {
   
   // Catch-all for protocol-relative URLs
   replaced_text = replaced_text.replace(
-    new RegExp(`//([a-zA-Z0-9-]+\\.)?${escapeRegExp(config.domains.target.main)}`, 'gi'),
+    CATCHALL_PROTO_RE,
     (match) => {
       const hostname = match.replace('//', '');
       const customDomain = getCustomDomain(hostname);
