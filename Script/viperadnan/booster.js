@@ -68,7 +68,11 @@ async function fetchAndApply(request) {
   const requestURL = new URL(request.url);
   requestURL.protocol = upstreamURL.protocol;
   requestURL.host = upstreamURL.host;
-  requestURL.pathname = upstreamURL.pathname + requestURL.pathname;
+
+  // Normalize path concatenation to avoid double slashes (e.g. '/' + '/path' -> '/path')
+  const basePrefix = upstreamURL.pathname.endsWith('/') ? upstreamURL.pathname.slice(0, -1) : upstreamURL.pathname;
+  const reqPath = requestURL.pathname.startsWith('/') ? requestURL.pathname : '/' + requestURL.pathname;
+  requestURL.pathname = (basePrefix + reqPath) || '/';
 
   // Create new request
   let newRequest;
