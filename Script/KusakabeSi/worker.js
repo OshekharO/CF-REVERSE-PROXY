@@ -11,26 +11,40 @@
 
 A CF-REVERSE-PROXY Script For Cloudflare Workers at https://github.com/OshekharO/CF-REVERSE-PROXY */
 
-reverse = {}
+var reverse = {};
 
-target = {} // Temporary variable, do not edit
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 addEventListener("fetch", event => {
-    var request = event.request
+    var request = event.request;
     var url = new URL(event.request.url);
+
+    let matchedDomain = null;
+    let matchedTargetConfig = null;
     for (const [s_domain, s_target] of Object.entries(reverse)) {
         if (url.host.endsWith(s_domain)) {
-            target = reverse[s_domain];
-            target.f_host = s_domain;
+            matchedDomain = s_domain;
+            matchedTargetConfig = s_target;
             break;
         }
     }
 
-    if (target.f_host == undefined) {
+    if (!matchedDomain || !matchedTargetConfig) {
         return event.respondWith(new Response("Not found", {
             status: 404,
         }));
     }
+
+    // Scope target configuration locally per request to prevent cross-request mutation and leaks
+    const target = {
+        ...matchedTargetConfig,
+        f_host: matchedDomain,
+        replace: { ...(matchedTargetConfig.replace || {}) },
+        redirect: matchedTargetConfig.redirect || {},
+        reverse: matchedTargetConfig.reverse || {}
+    };
 
     url.protocol = target.protocol;
     url.host = target.host;
@@ -63,7 +77,7 @@ addEventListener("fetch", event => {
         method: request.method
     });
     event.passThroughOnException();
-    return event.respondWith(handleRequest(modifiedRequest));
+    return event.respondWith(handleRequest(modifiedRequest, target));
 });
 
 function cfDecodeEmail(encodedString) {
@@ -89,7 +103,7 @@ function cfEncodeEmail(email, key = 0) {
     return out;
 }
 
-async function handleRequest(req) {
+async function handleRequest(req, target) {
     try {
         var response = await fetch(req);
 
@@ -107,15 +121,19 @@ async function handleRequest(req) {
                 org_cf_email_decode = org_cf_email_decode.replaceAll(target.host, target.f_host);
                 replace_add[org_cf_email] = cfEncodeEmail(org_cf_email_decode);
             }
-            target.replace = {
+            const currentReplace = {
                 ...target.replace,
                 ...replace_add
             };
-            target.html = html;
 
-            // Single pass replacement
-            const replaceRegex = new RegExp(Object.keys(target.replace).join('|'), 'g');
-            html = html.replace(replaceRegex, match => target.replace[match]);
+            // Single pass replacement with escaped regex patterns and guard for empty dictionary
+            const replaceKeys = Object.keys(currentReplace);
+            if (replaceKeys.length > 0) {
+                // Sort keys by length descending to match longer strings first
+                replaceKeys.sort((a, b) => b.length - a.length);
+                const replaceRegex = new RegExp(replaceKeys.map(escapeRegExp).join('|'), 'g');
+                html = html.replace(replaceRegex, match => currentReplace[match]);
+            }
             html = html.replaceAll(target.host, target.f_host);
 
             return new Response(html, {

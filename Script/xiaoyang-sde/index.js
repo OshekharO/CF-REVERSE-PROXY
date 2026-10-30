@@ -68,7 +68,10 @@ async function fetchAndApply(request) {
     if (url.pathname === '/') {
         url.pathname = upstream_path;
     } else {
-        url.pathname = upstream_path + url.pathname;
+        // Normalize upstream_path concatenation to avoid leading double slashes (e.g. '/' + '/api' -> '//api')
+        const basePrefix = upstream_path.endsWith('/') ? upstream_path.slice(0, -1) : upstream_path;
+        const reqPath = url.pathname.startsWith('/') ? url.pathname : '/' + url.pathname;
+        url.pathname = (basePrefix + reqPath) || '/';
     }
 
     if (blocked_region.includes(region)) {
